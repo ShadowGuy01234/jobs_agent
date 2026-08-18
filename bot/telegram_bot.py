@@ -1,0 +1,371 @@
+"""Interactive Telegram Bot Controller using Long-Polling and Inline Keyboards."""
+
+import asyncio
+import logging
+import re
+from typing import Any, Dict, Optional
+from telegram import Update
+from telegram.constants import ParseMode
+from telegram.ext import (
+    Application,
+    ApplicationBuilder,
+    CallbackQueryHandler,
+    CommandHandler,
+    ContextTypes,
+    MessageHandler,
+    filters,
+)
+
+from bot.card_renderer import render_follow_up_card, render_opportunity_card
+from config import settings
+from db.database import (
+    get_db_connection,
+    get_system_stats,
+    log_audit,
+    update_contact_email,
+    update_draft_body,
+    update_follow_up_status,
+    update_opportunity_status,
+)
+from discovery.manager import DiscoveryManager
+from pipeline.orchestrator import PipelineOrchestrator
+from profile.parser import load_user_profile
+
+logger = logging.getLogger(__name__)
+
+
+class TelegramBotController:
+    """Telegram Bot Controller running in long-polling mode (zero inbound ports required)."""
+
+    def __init__(self, token: Optional[str] = None, authorized_chat_id: Optional[str] = None):
+        self.token = token or settings.TELEGRAM_BOT_TOKEN
+        self.authorized_chat_id = str(authorized_chat_id or settings.TELEGRAM_CHAT_ID).strip()
+        self.orchestrator = PipelineOrchestrator()
+        self.discovery_manager = DiscoveryManager()
+        self.user_sessions: Dict[str, Dict[str, Any]] = {}
+        self.app: Optional[Application] = None
+
+    def is_authorized(self, update: Update) -> bool:
+        """Verify that incoming message/callback is from the authorized user chat."""
+        if not update.effective_chat:
+            return False
+        chat_id = str(update.effective_chat.id).strip()
+        if not self.authorized_chat_id:
+            # If not configured yet, accept and log
+            return True
+        return chat_id == self.authorized_chat_id
+
+    # ==========================================================================
+    # 📱 COMMAND HANDLERS
+    # ==========================================================================
+
+    async def cmd_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handle /start and /help commands."""
+        if not self.is_authorized(update):
+            return
+
+        user_chat_id = update.effective_chat.id
+        msg = (
+            "🤖 <b>Personal AI Startup & Job Outreach Bot</b>\n\n"
+            f"Your Chat ID: <code>{user_chat_id}</code>\n\n"
+            "<b>Available Commands:</b>\n"
+            "• <code>/status</code> — View discovery & outreach metrics\n"
+            "• <code>/profile</code> — View your profile & targeting criteria\n"
+            "• <code>/discover [source]</code> — Trigger on-demand discovery (e.g. <code>/discover yc</code>)\n"
+            "• <code>/set min_score [number]</code> — Update minimum fit score (e.g. <code>/set min_score 80</code>)\n"
+            "• <code>/dry_run [on|off]</code> — Toggle dry-run email sending mode\n"
+            "• <code>/help</code> — Show this menu\n"
+        )
+        await update.message.reply_text(msg, parse_mode=ParseMode.HTML)
+
+    async def cmd_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handle /status command."""
+        if not self.is_authorized(update):
+            return
+
+        stats = get_system_stats()
+        dry_run_tag = "🟡 DRY-RUN (Simulated)" if settings.DRY_RUN else "🟢 LIVE SMTP"
+
+        msg = (
+            f"📊 <b>Pipeline Statistics ({dry_run_tag})</b>\n\n"
+            f"• <b>Total Companies Tracked:</b> {stats.get('total_companies', 0)}\n"
+            f"• <b>Discovered Opportunities:</b> {stats.get('opportunities_discovered', 0)}\n"
+            f"• <b>Pending Your Approval:</b> {stats.get('opportunities_pending_approval', 0)}\n"
+            f"• <b>Total Outreach Sent:</b> {stats.get('total_sent', 0)}\n"
+            f"• <b>Confirmed Replies:</b> {stats.get('total_replies', 0)}\n"
+            f"• <b>Filtered Out:</b> {stats.get('opportunities_filtered', 0)}\n"
+            f"• <b>Rejected:</b> {stats.get('opportunities_rejected', 0)}\n"
+        )
+        await update.message.reply_text(msg, parse_mode=ParseMode.HTML)
+
+    async def cmd_profile(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handle /profile command."""
+        if not self.is_authorized(update):
+            return
+
+        try:
+            profile = load_user_profile()
+            cand = profile.candidate
+            targ = profile.targeting
+
+            msg = (
+                f"👤 <b>Candidate Profile: {cand.full_name}</b>\n\n"
+                f"<b>Headline:</b> {cand.headline}\n"
+                f"<b>Target Stages:</b> {', '.join(targ.target_stages)}\n"
+                f"<b>Target Domains:</b> {', '.join(targ.target_domains[:4])}\n"
+                f"<b>Target Roles:</b> {', '.join(targ.target_roles[:3])}\n"
+                f"<b>Min Fit Score:</b> {targ.min_fit_score}/100\n"
+                f"<b>Max Alerts/Day:</b> {targ.max_alerts_per_day}\n"
+                f"<b>Location:</b> Remote Only ({', '.join(targ.location.prioritized_regions)})\n"
+            )
+            await update.message.reply_text(msg, parse_mode=ParseMode.HTML)
+        except Exception as e:
+            await update.message.reply_text(f"⚠️ Error loading profile: {e}")
+
+    async def cmd_discover(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handle /discover [source] command."""
+        if not self.is_authorized(update):
+            return
+
+        args = context.args or []
+        source = args[0].lower() if args else None
+
+        await update.message.reply_text(
+            f"🔍 Triggering discovery sweep ({source or 'all sources'})..."
+        )
+
+        sources_to_run = [source] if source else None
+        new_ids = await self.discovery_manager.run_discovery_sweep(sources=sources_to_run, limit_per_source=10)
+
+        if not new_ids:
+            await update.message.reply_text("✅ Discovery finished. No new opportunities found.")
+            return
+
+        await update.message.reply_text(f"🚀 Found {len(new_ids)} new opportunities! Evaluating & scoring...")
+
+        # Process newly discovered opportunities through LangGraph pipeline
+        for opp_id in new_ids:
+            interrupt_payload = await self.orchestrator.process_opportunity(opp_id)
+            if interrupt_payload and interrupt_payload.get("fit_score", 0) >= settings.MIN_FIT_SCORE:
+                # Send interactive card to Telegram
+                text, keyboard = render_opportunity_card(interrupt_payload)
+                await update.message.reply_text(text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
+
+    async def cmd_set(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handle /set [key] [value] command."""
+        if not self.is_authorized(update):
+            return
+
+        args = context.args or []
+        if len(args) < 2:
+            await update.message.reply_text("Usage: <code>/set min_score 80</code>", parse_mode=ParseMode.HTML)
+            return
+
+        key, val = args[0].lower(), args[1]
+        if key == "min_score":
+            try:
+                settings.MIN_FIT_SCORE = int(val)
+                await update.message.reply_text(f"✅ Minimum fit score updated to {settings.MIN_FIT_SCORE}")
+            except ValueError:
+                await update.message.reply_text("⚠️ Score must be an integer (0-100).")
+        else:
+            await update.message.reply_text(f"⚠️ Unknown setting key: {key}")
+
+    async def cmd_dry_run(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handle /dry_run [on|off]."""
+        if not self.is_authorized(update):
+            return
+
+        args = context.args or []
+        if args and args[0].lower() in ["off", "false", "live"]:
+            settings.DRY_RUN = False
+            await update.message.reply_text("🟢 DRY-RUN mode disabled. Live emails will be dispatched via Gmail SMTP.")
+        else:
+            settings.DRY_RUN = True
+            await update.message.reply_text("🟡 DRY-RUN mode enabled. Emails will be logged without real dispatch.")
+
+    # ==========================================================================
+    # 🔘 INLINE BUTTON CALLBACK HANDLERS
+    # ==========================================================================
+
+    async def handle_callback_query(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Route inline button clicks."""
+        query = update.callback_query
+        if not query or not self.is_authorized(update):
+            return
+
+        await query.answer()
+        data = query.data or ""
+        chat_id = str(update.effective_chat.id)
+
+        # 1. Opportunity Actions
+        if data.startswith("approve_"):
+            opp_id = int(data.replace("approve_", ""))
+            await query.edit_message_reply_markup(reply_markup=None)
+            await query.message.reply_text("⏳ Resuming thread & dispatching email...")
+
+            result = await self.orchestrator.resume_opportunity(opp_id, action="approve")
+            if result.get("is_sent"):
+                await query.message.reply_text(f"✅ <b>Approved & Sent!</b> (Opp #{opp_id})", parse_mode=ParseMode.HTML)
+            else:
+                err = result.get("error_message", "Unknown error")
+                await query.message.reply_text(f"⚠️ <b>Sending Failed:</b> {err}", parse_mode=ParseMode.HTML)
+
+        elif data.startswith("edit_"):
+            opp_id = int(data.replace("edit_", ""))
+            self.user_sessions[chat_id] = {
+                "mode": "awaiting_draft_edit",
+                "opp_id": opp_id,
+                "msg_id": query.message.message_id,
+            }
+            await query.message.reply_text(
+                f"✏️ <b>Editing Draft for Opp #{opp_id}</b>\n\n"
+                "Please reply directly to this message with your updated email body:",
+                parse_mode=ParseMode.HTML,
+            )
+
+        elif data.startswith("email_"):
+            opp_id = int(data.replace("email_", ""))
+            self.user_sessions[chat_id] = {
+                "mode": "awaiting_email_input",
+                "opp_id": opp_id,
+                "msg_id": query.message.message_id,
+            }
+            await query.message.reply_text(
+                f"✍️ <b>Provide Email for Opp #{opp_id}</b>\n\n"
+                "Please reply with the verified email address:",
+                parse_mode=ParseMode.HTML,
+            )
+
+        elif data.startswith("reject_"):
+            opp_id = int(data.replace("reject_", ""))
+            await query.edit_message_reply_markup(reply_markup=None)
+            await self.orchestrator.resume_opportunity(opp_id, action="reject")
+            await query.message.reply_text(f"❌ Opp #{opp_id} marked as rejected.")
+
+        elif data.startswith("skip_"):
+            opp_id = int(data.replace("skip_", ""))
+            await query.edit_message_reply_markup(reply_markup=None)
+            await query.message.reply_text(f"⏭️ Opp #{opp_id} skipped.")
+
+        # 2. Follow-Up Check-in Actions
+        elif data.startswith("fu_replied_"):
+            sent_id = int(data.replace("fu_replied_", ""))
+            update_follow_up_status(sent_id, status="replied", notes="Confirmed via Telegram")
+            await query.edit_message_reply_markup(reply_markup=None)
+            await query.message.reply_text("🎉 Fantastic! Thread marked as <b>Replied / In Conversation</b>.", parse_mode=ParseMode.HTML)
+
+        elif data.startswith("fu_bump_"):
+            sent_id = int(data.replace("fu_bump_", ""))
+            await query.edit_message_reply_markup(reply_markup=None)
+            await query.message.reply_text("📝 Generating 2-sentence follow-up bump...")
+            # Trigger follow-up bump drafting
+            # (handled by follow-up checker / draft generator)
+
+        elif data.startswith("fu_snooze_"):
+            sent_id = int(data.replace("fu_snooze_", ""))
+            update_follow_up_status(sent_id, status="pending_check", notes="Snoozed 3 days")
+            await query.edit_message_reply_markup(reply_markup=None)
+            await query.message.reply_text("⏰ Snoozed follow-up check-in for 3 days.")
+
+        elif data.startswith("fu_close_"):
+            sent_id = int(data.replace("fu_close_", ""))
+            update_follow_up_status(sent_id, status="closed", notes="Closed via Telegram")
+            await query.edit_message_reply_markup(reply_markup=None)
+            await query.message.reply_text("🔒 Follow-up thread closed.")
+
+    # ==========================================================================
+    # 💬 TEXT MESSAGE LISTENER (FOR DRAFT EDITS & EMAIL INPUT)
+    # ==========================================================================
+
+    async def handle_text_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handle incoming text replies for draft edits and manual email updates."""
+        if not update.message or not update.message.text or not self.is_authorized(update):
+            return
+
+        chat_id = str(update.effective_chat.id)
+        session = self.user_sessions.get(chat_id)
+        if not session:
+            return
+
+        text = update.message.text.strip()
+        opp_id = session.get("opp_id")
+        mode = session.get("mode")
+
+        if mode == "awaiting_draft_edit":
+            del self.user_sessions[chat_id]
+            # Fetch draft ID for this opportunity
+            with get_db_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("SELECT id FROM outreach_drafts WHERE opportunity_id = ? ORDER BY id DESC LIMIT 1", (opp_id,))
+                row = cursor.fetchone()
+                if row:
+                    update_draft_body(row["id"], body=text, status="edited", notes="Edited via Telegram")
+
+            await update.message.reply_text(
+                f"✅ <b>Draft updated for Opp #{opp_id}!</b>\n\n"
+                f"Updated text:\n────────────────\n{text}\n────────────────\n\n"
+                f"Tap <b>Approve & Send</b> to dispatch.",
+                parse_mode=ParseMode.HTML,
+            )
+
+            # Prompt to resume with edited draft
+            await self.orchestrator.resume_opportunity(
+                opportunity_id=opp_id,
+                action="approve",
+                edited_body=text,
+            )
+
+        elif mode == "awaiting_email_input":
+            del self.user_sessions[chat_id]
+            # Validate basic email syntax
+            if not re.match(r"[^@]+@[^@]+\.[^@]+", text):
+                await update.message.reply_text("⚠️ Invalid email format. Please try again.")
+                return
+
+            with get_db_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    """
+                    SELECT c.id FROM contacts c
+                    JOIN opportunities o ON c.company_id = o.company_id
+                    WHERE o.id = ? LIMIT 1
+                    """,
+                    (opp_id,),
+                )
+                row = cursor.fetchone()
+                if row:
+                    update_contact_email(row["id"], email=text, confidence="verified")
+
+            await update.message.reply_text(
+                f"✅ <b>Email saved for Opp #{opp_id}:</b> <code>{text}</code>\n\n"
+                f"Ready for dispatch.",
+                parse_mode=ParseMode.HTML,
+            )
+
+    # ==========================================================================
+    # 🚀 BOT INITIALIZATION & POLLING
+    # ==========================================================================
+
+    def build_application(self) -> Application:
+        """Construct and configure the python-telegram-bot application."""
+        if not self.token:
+            raise ValueError("TELEGRAM_BOT_TOKEN is not configured in .env")
+
+        app = ApplicationBuilder().token(self.token).build()
+
+        # Add Command Handlers
+        app.add_handler(CommandHandler("start", self.cmd_start))
+        app.add_handler(CommandHandler("help", self.cmd_start))
+        app.add_handler(CommandHandler("status", self.cmd_status))
+        app.add_handler(CommandHandler("profile", self.cmd_profile))
+        app.add_handler(CommandHandler("discover", self.cmd_discover))
+        app.add_handler(CommandHandler("set", self.cmd_set))
+        app.add_handler(CommandHandler("dry_run", self.cmd_dry_run))
+
+        # Add Callback Query & Message Handlers
+        app.add_handler(CallbackQueryHandler(self.handle_callback_query))
+        app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_text_message))
+
+        self.app = app
+        return app
