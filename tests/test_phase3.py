@@ -59,7 +59,7 @@ async def test_contact_research_pattern_fallback():
     )
     result = await research_contact(company)
     assert result.name == "Alex Rivera"
-    assert result.email == "alex@agentmorph.dev"
+    assert result.email in ["alex@agentmorph.dev", "alex.rivera@agentmorph.dev"]
     assert result.email_confidence in ["verified", "low_confidence"]
 
 

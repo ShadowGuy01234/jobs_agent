@@ -277,25 +277,13 @@ async def search_tavily_email(
                 },
             )
             if resp.status_code == 200:
-                data = resp.json()
-                results_text = " ".join([r.get("content", "") for r in data.get("results", [])])
-
                 # Look for domain-matching emails first
                 if domain:
-                    matches = re.findall(rf"\b[A-Za-z0-9._%+-]+@{re.escape(domain)}\b", results_text)
+                    matches = re.findall(rf"\b[A-Za-z0-9._%+-]+@{re.escape(domain)}\b", results_text, flags=re.IGNORECASE)
                     if matches:
-                        return matches[0], "low_confidence"
-
-                # Look for general emails
-                general_matches = re.findall(
-                    r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b", results_text
-                )
-                for gm in general_matches:
-                    if not any(
-                        excluded in gm.lower()
-                        for excluded in ["example.com", "noreply", "support", "sales", "info"]
-                    ):
-                        return gm, "low_confidence"
+                        return matches[0].lower(), "low_confidence"
+                    # If domain is known, do not accept random other domains
+                    return None, "missing"
     except Exception as e:
         logger.debug(f"Tavily email search error: {e}")
 
