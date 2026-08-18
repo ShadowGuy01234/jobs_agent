@@ -46,14 +46,28 @@ class TelegramBotController:
         self.app: Optional[Application] = None
 
     def is_authorized(self, update: Update) -> bool:
-        """Verify that incoming message/callback is from the authorized user chat."""
+        """Verify that incoming message/callback is from the authorized user chat or username."""
         if not update.effective_chat:
             return False
         chat_id = str(update.effective_chat.id).strip()
-        if not self.authorized_chat_id:
-            # If not configured yet, accept and log
+        username = (update.effective_user.username or "").strip().lstrip("@").lower() if update.effective_user else ""
+        auth_target = self.authorized_chat_id.lstrip("@").lower()
+
+        if not auth_target:
+            # If not configured, auto-authorize and capture chat_id
+            settings.TELEGRAM_CHAT_ID = chat_id
             return True
-        return chat_id == self.authorized_chat_id
+
+        # Check numeric ID match or username handle match
+        if chat_id == self.authorized_chat_id or (username and username == auth_target):
+            # Auto-save numeric chat ID for proactive scheduler broadcasts
+            if settings.TELEGRAM_CHAT_ID != chat_id:
+                settings.TELEGRAM_CHAT_ID = chat_id
+                logger.info(f"Authorized user confirmed: username=@{username}, numeric chat_id={chat_id}")
+            return True
+
+        logger.warning(f"Unauthorized message received from chat_id={chat_id}, username=@{username}")
+        return False
 
     # ==========================================================================
     # 📱 COMMAND HANDLERS
