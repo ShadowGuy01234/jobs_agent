@@ -1,0 +1,41 @@
+"""Database package."""
+
+from db.database import (
+    get_db_connection,
+    init_db,
+    get_or_create_company,
+    save_opportunity,
+    opportunity_exists,
+    is_company_contacted_recently,
+    update_opportunity_status,
+    save_or_update_contact,
+    update_contact_email,
+    save_evaluation,
+    save_draft,
+    update_draft_body,
+    record_sent_email,
+    get_pending_follow_ups,
+    update_follow_up_status,
+    log_audit,
+    get_system_stats,
+)
+
+__all__ = [
+    "get_db_connection",
+    "init_db",
+    "get_or_create_company",
+    "save_opportunity",
+    "opportunity_exists",
+    "is_company_contacted_recently",
+    "update_opportunity_status",
+    "save_or_update_contact",
+    "update_contact_email",
+    "save_evaluation",
+    "save_draft",
+    "update_draft_body",
+    "record_sent_email",
+    "get_pending_follow_ups",
+    "update_follow_up_status",
+    "log_audit",
+    "get_system_stats",
+]
