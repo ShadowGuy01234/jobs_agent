@@ -3,7 +3,7 @@
 import json
 import logging
 import re
-from typing import Any, Dict, Optional, Type, TypeVar
+from typing import Any, Dict, List, Optional, Type, TypeVar
 from langchain_openai import ChatOpenAI
 from pydantic import BaseModel
 
@@ -15,31 +15,56 @@ T = TypeVar("T", bound=BaseModel)
 
 
 def extract_json_from_text(text: str) -> str:
-    """Robustly extract valid JSON from LLM output containing reasoning tags, markdown fences, or preamble."""
+    """Robustly extract valid JSON from LLM output containing reasoning tags, markdown fences, or draft commentary."""
     if not text:
         return ""
 
-    # 1. Remove thinking / reasoning tags (<think>...</think> or orphaned </think>)
+    # 1. Clean closed thinking / reasoning tags (<think>...</think> or orphaned </think>)
     cleaned = re.sub(r"<think>[\s\S]*?</think>", "", text, flags=re.IGNORECASE).strip()
     if "</think>" in cleaned:
         cleaned = cleaned.split("</think>")[-1].strip()
 
-    # 2. Extract content within markdown code fences ```json ... ``` or ``` ... ```
-    fence_match = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", cleaned, re.IGNORECASE)
-    if fence_match:
-        return fence_match.group(1).strip()
+    # 2. Extract content within markdown code fences ```json ... ``` or ``` ... ``` (search from end)
+    fences = list(re.finditer(r"```(?:json)?\s*([\s\S]*?)\s*```", cleaned, re.IGNORECASE))
+    if fences:
+        for fence in reversed(fences):
+            candidate = fence.group(1).strip()
+            try:
+                json.loads(candidate)
+                return candidate
+            except Exception:
+                pass
 
-    # 3. Extract outermost JSON object { ... }
-    first_brace = cleaned.find("{")
+    # 3. Find valid JSON object by scanning '{' from bottom to top
     last_brace = cleaned.rfind("}")
+    if last_brace != -1:
+        brace_indices = [i for i, c in enumerate(cleaned) if c == "{"]
+        for first_brace in reversed(brace_indices):
+            if first_brace < last_brace:
+                candidate = cleaned[first_brace : last_brace + 1].strip()
+                try:
+                    json.loads(candidate)
+                    return candidate
+                except Exception:
+                    continue
+
+    # 4. Find valid JSON array by scanning '[' from bottom to top
+    last_bracket = cleaned.rfind("]")
+    if last_bracket != -1:
+        bracket_indices = [i for i, c in enumerate(cleaned) if c == "["]
+        for first_bracket in reversed(bracket_indices):
+            if first_bracket < last_bracket:
+                candidate = cleaned[first_bracket : last_bracket + 1].strip()
+                try:
+                    json.loads(candidate)
+                    return candidate
+                except Exception:
+                    continue
+
+    # 5. Outermost fallback
+    first_brace = cleaned.find("{")
     if first_brace != -1 and last_brace != -1 and last_brace > first_brace:
         return cleaned[first_brace : last_brace + 1].strip()
-
-    # 4. Extract outermost JSON array [ ... ]
-    first_bracket = cleaned.find("[")
-    last_bracket = cleaned.rfind("]")
-    if first_bracket != -1 and last_bracket != -1 and last_bracket > first_bracket:
-        return cleaned[first_bracket : last_bracket + 1].strip()
 
     return cleaned.strip()
 
@@ -132,7 +157,7 @@ class LLMClient:
         response = await llm.ainvoke(messages)
         raw_content = response.content.strip()
 
-        # Clean reasoning tokens (<think>...</think>), markdown fences, preamble
+        # Clean reasoning tokens (<think>...</think>), draft outlines, markdown fences
         extracted_json = extract_json_from_text(raw_content)
 
         try:
