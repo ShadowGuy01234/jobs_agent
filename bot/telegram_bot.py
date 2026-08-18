@@ -252,6 +252,8 @@ class TelegramBotController:
                 return
 
         matched_count = 0
+        evaluated_summaries = []
+
         # Process opportunities through LangGraph pipeline with slight rate-limit throttling
         for i, opp_id in enumerate(limit_to_process):
             try:
@@ -264,13 +266,73 @@ class TelegramBotController:
             except Exception as e:
                 logger.error(f"Error processing opp #{opp_id}: {e}", exc_info=True)
 
-        await update.message.reply_text(
-            f"✨ <b>Evaluation Complete!</b>\n"
-            f"• Evaluated: {len(limit_to_process)}\n"
-            f"• High-Fit Cards Sent: {matched_count}\n"
-            f"Use <code>/review</code> anytime to review pending drafts.",
-            parse_mode=ParseMode.HTML,
+            # Retrieve evaluation outcome for summary breakdown
+            from db.database import get_opportunity_evaluation_summary
+            summ = get_opportunity_evaluation_summary(opp_id)
+            if summ:
+                evaluated_summaries.append(summ)
+
+        # Build comprehensive summary list of every opportunity evaluated
+        lines = []
+        for s in evaluated_summaries:
+            opp_id = s.get("id")
+            comp = html.escape(s.get("company_name") or "Unknown Company")
+            title = html.escape(s.get("title") or "Opportunity")
+            score = s.get("fit_score", 0)
+            reason = s.get("summary_reasoning") or "Evaluated against candidate profile."
+            if len(reason) > 120:
+                reason = reason[:117] + "..."
+            reason = html.escape(reason)
+
+            if score >= settings.MIN_FIT_SCORE:
+                badge = "🎯"
+                status_label = f"<b>{score}/100</b> [Card Sent 📬]"
+            elif score > 0:
+                badge = "⚠️"
+                status_label = f"<b>{score}/100</b> [Filtered Out]"
+            else:
+                badge = "🚫"
+                status_label = f"<b>{score}/100</b> [Knockout]"
+
+            lines.append(
+                f"{badge} <b>#{opp_id} {comp}</b> — {title}\n"
+                f"   • Score: {status_label}\n"
+                f"   • Reason: <i>{reason}</i>\n"
+            )
+
+        # Send header & breakdown in chunks of 5
+        chunk_size = 5
+        total_eval = len(evaluated_summaries)
+        
+        header_text = (
+            f"📊 <b>Discovery & Evaluation Breakdown</b>\n"
+            f"• Total Evaluated: <b>{total_eval}</b>\n"
+            f"• High-Fit Cards Sent: <b>{matched_count}</b> (Threshold: {settings.MIN_FIT_SCORE}/100)\n"
+            f"• Filtered / Dropped: <b>{total_eval - matched_count}</b>\n"
+            f"──────────────────────────\n"
         )
+
+        if not lines:
+            await update.message.reply_text(
+                header_text + "ℹ️ No opportunities were evaluated in this run.",
+                parse_mode=ParseMode.HTML,
+            )
+        else:
+            for idx in range(0, len(lines), chunk_size):
+                chunk = lines[idx : idx + chunk_size]
+                chunk_msg = header_text if idx == 0 else ""
+                chunk_msg += "\n".join(chunk)
+                if idx + chunk_size >= len(lines):
+                    chunk_msg += (
+                        f"\n──────────────────────────\n"
+                        f"Use <code>/review</code> to approve or customize pending drafts."
+                    )
+                try:
+                    await update.message.reply_text(chunk_msg, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
+                except Exception as e:
+                    logger.warning(f"HTML error sending summary chunk: {e}. Sending plain text.")
+                    clean_chunk = re.sub(r"<[^>]+>", "", chunk_msg)
+                    await update.message.reply_text(clean_chunk, disable_web_page_preview=True)
 
     async def cmd_logs(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle /logs command to view recent diagnostic log output."""

@@ -552,3 +552,25 @@ def get_unscored_opportunity_ids(
             (limit,),
         )
         return [row[0] for row in cursor.fetchall()]
+
+
+def get_opportunity_evaluation_summary(
+    opportunity_id: int, db_path: Optional[Path] = None
+) -> Optional[Dict[str, Any]]:
+    """Retrieve opportunity metadata along with its evaluation score, decision, and summary reasoning."""
+    with get_db_connection(db_path) as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT o.id, o.title, o.type, o.status, o.url,
+                   c.name as company_name, c.stage as company_stage,
+                   e.fit_score, e.decision, e.summary_reasoning
+            FROM opportunities o
+            JOIN companies c ON o.company_id = c.id
+            LEFT JOIN evaluations e ON o.id = e.opportunity_id
+            WHERE o.id = ?
+            """,
+            (opportunity_id,),
+        )
+        row = cursor.fetchone()
+        return dict(row) if row else None
