@@ -1,0 +1,20 @@
+[Unit]
+Description=Personal AI Startup & Job Outreach Bot
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/job_outreach
+ExecStart=/home/ubuntu/job_outreach/venv/bin/python app.py
+Restart=always
+RestartSec=10
+EnvironmentFile=/home/ubuntu/job_outreach/.env
+
+# Standard output & error logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=job_outreach
+
+[Install]
+WantedBy=multi-user.target
