@@ -505,3 +505,32 @@ def get_system_stats(db_path: Optional[Path] = None) -> Dict[str, int]:
         stats["total_replies"] = cursor.fetchone()[0]
 
         return stats
+
+
+def get_pending_approval_opportunities(
+    limit: int = 10, db_path: Optional[Path] = None
+) -> List[Dict[str, Any]]:
+    """Retrieve opportunities with status 'pending_approval' and their drafted payloads."""
+    with get_db_connection(db_path) as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT o.id as opportunity_id, o.type as opportunity_type, o.title, o.url,
+                   c.name as company_name, c.domain as company_domain, c.stage as enriched_stage,
+                   e.fit_score, e.summary_reasoning,
+                   ct.name as contact_name, ct.title as contact_title, ct.email as contact_email,
+                   ct.email_confidence, ct.linkedin_url,
+                   d.subject as draft_subject, d.body as draft_body
+            FROM opportunities o
+            JOIN companies c ON o.company_id = c.id
+            LEFT JOIN evaluations e ON o.id = e.opportunity_id
+            LEFT JOIN contacts ct ON c.id = ct.company_id
+            LEFT JOIN outreach_drafts d ON o.id = d.opportunity_id
+            WHERE o.status = 'pending_approval'
+            ORDER BY o.id DESC
+            LIMIT ?
+            """,
+            (limit,),
+        )
+        rows = cursor.fetchall()
+        return [dict(row) for row in rows]

@@ -1,5 +1,6 @@
-"""Telegram message card formatters with rich Markdown formatting and inline keyboards."""
+"""Telegram message card formatters with rich Markdown/HTML formatting and inline keyboards."""
 
+import html
 from typing import Any, Dict, Optional
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
@@ -9,17 +10,17 @@ def render_opportunity_card(payload: Dict[str, Any]) -> tuple[str, InlineKeyboar
     opp_id = payload["opportunity_id"]
     opp_type = payload.get("opportunity_type", "founder_reachout")
     score = payload.get("fit_score", 0)
-    company = payload.get("company_name", "Startup")
-    domain = payload.get("company_domain", "")
-    milestone = payload.get("funding_summary") or payload.get("enriched_stage", "Seed")
-    contact_name = payload.get("contact_name", "Founding Team")
-    contact_title = payload.get("contact_title", "Leadership")
+    company = html.escape(str(payload.get("company_name", "Startup")))
+    domain = html.escape(str(payload.get("company_domain", "")))
+    milestone = html.escape(str(payload.get("funding_summary") or payload.get("enriched_stage", "Seed")))
+    contact_name = html.escape(str(payload.get("contact_name", "Founding Team")))
+    contact_title = html.escape(str(payload.get("contact_title", "Leadership")))
     contact_email = payload.get("contact_email")
     confidence = payload.get("email_confidence", "missing")
     linkedin = payload.get("linkedin_url")
-    reasoning = payload.get("summary_reasoning", "")
-    subject = payload.get("draft_subject", "")
-    body = payload.get("draft_body", "")
+    reasoning = html.escape(str(payload.get("summary_reasoning", "")))
+    subject = html.escape(str(payload.get("draft_subject", "")))
+    body = html.escape(str(payload.get("draft_body", "")))
 
     # Header Tag
     if opp_type == "stealth_reachout":
@@ -31,11 +32,11 @@ def render_opportunity_card(payload: Dict[str, Any]) -> tuple[str, InlineKeyboar
 
     # Email badge
     if contact_email and confidence == "verified":
-        email_str = f"<code>{contact_email}</code> (✅ Verified)"
+        email_str = f"<code>{html.escape(str(contact_email))}</code> (✅ Verified)"
     elif contact_email and confidence == "low_confidence":
-        email_str = f"<code>{contact_email}</code> (⚠️ Low Confidence / Pattern Guess)"
+        email_str = f"<code>{html.escape(str(contact_email))}</code> (⚠️ Low Confidence / Pattern Guess)"
     elif contact_email:
-        email_str = f"<code>{contact_email}</code>"
+        email_str = f"<code>{html.escape(str(contact_email))}</code>"
     else:
         email_str = "❌ <i>Email Missing (Provide below)</i>"
 
@@ -81,11 +82,11 @@ def render_opportunity_card(payload: Dict[str, Any]) -> tuple[str, InlineKeyboar
 def render_follow_up_card(item: Dict[str, Any]) -> tuple[str, InlineKeyboardMarkup]:
     """Format 5-7 day follow-up check-in card."""
     sent_id = item["id"]
-    company = item.get("company_name", "Company")
-    contact = item.get("contact_name") or item.get("recipient_email")
-    email = item.get("recipient_email")
-    sent_at = item.get("sent_at", "")[:10]
-    subject = item.get("subject", "")
+    company = html.escape(str(item.get("company_name", "Company")))
+    contact = html.escape(str(item.get("contact_name") or item.get("recipient_email", "")))
+    email = html.escape(str(item.get("recipient_email", "")))
+    sent_at = html.escape(str(item.get("sent_at", "")[:10]))
+    subject = html.escape(str(item.get("subject", "")))
 
     text = (
         f"<b>━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━</b>\n"

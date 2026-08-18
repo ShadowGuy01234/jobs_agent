@@ -73,6 +73,29 @@ class TelegramBotController:
     # 📱 COMMAND HANDLERS
     # ==========================================================================
 
+    async def _send_opportunity_card(
+        self, chat_id: int, payload: Dict[str, Any], context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
+        """Safely send an opportunity card to Telegram with HTML fallback."""
+        text, keyboard = render_opportunity_card(payload)
+        try:
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text=text,
+                reply_markup=keyboard,
+                parse_mode=ParseMode.HTML,
+                disable_web_page_preview=True,
+            )
+        except Exception as e:
+            logger.warning(f"HTML render failed: {e}. Falling back to plain text format.")
+            clean_text = re.sub(r"<[^>]+>", "", text)
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text=clean_text,
+                reply_markup=keyboard,
+                disable_web_page_preview=True,
+            )
+
     async def cmd_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle /start and /help commands."""
         if not self.is_authorized(update):
@@ -83,6 +106,7 @@ class TelegramBotController:
             "🤖 <b>Personal AI Startup & Job Outreach Bot</b>\n\n"
             f"Your Chat ID: <code>{user_chat_id}</code>\n\n"
             "<b>Available Commands:</b>\n"
+            "• <code>/review</code> — Review all opportunities pending approval\n"
             "• <code>/status</code> — View discovery & outreach metrics\n"
             "• <code>/profile</code> — View your profile & targeting criteria\n"
             "• <code>/discover [source]</code> — Trigger on-demand discovery (e.g. <code>/discover yc</code>)\n"
@@ -91,6 +115,28 @@ class TelegramBotController:
             "• <code>/help</code> — Show this menu\n"
         )
         await update.message.reply_text(msg, parse_mode=ParseMode.HTML)
+
+    async def cmd_review(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handle /review command — send cards for all opportunities pending approval."""
+        if not self.is_authorized(update):
+            return
+
+        from db.database import get_pending_approval_opportunities
+
+        pending = get_pending_approval_opportunities(limit=10)
+        if not pending:
+            await update.message.reply_text(
+                "✅ <b>No pending approvals!</b> All caught up.\nUse <code>/discover yc</code> to sweep for new startups.",
+                parse_mode=ParseMode.HTML,
+            )
+            return
+
+        await update.message.reply_text(
+            f"📋 Found <b>{len(pending)} opportunity</b> waiting for your review:",
+            parse_mode=ParseMode.HTML,
+        )
+        for item in pending:
+            await self._send_opportunity_card(update.effective_chat.id, item, context)
 
     async def cmd_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle /status command."""
@@ -108,7 +154,8 @@ class TelegramBotController:
             f"• <b>Total Outreach Sent:</b> {stats.get('total_sent', 0)}\n"
             f"• <b>Confirmed Replies:</b> {stats.get('total_replies', 0)}\n"
             f"• <b>Filtered Out:</b> {stats.get('opportunities_filtered', 0)}\n"
-            f"• <b>Rejected:</b> {stats.get('opportunities_rejected', 0)}\n"
+            f"• <b>Rejected:</b> {stats.get('opportunities_rejected', 0)}\n\n"
+            "<i>Tip: Send <code>/review</code> to see pending cards.</i>"
         )
         await update.message.reply_text(msg, parse_mode=ParseMode.HTML)
 
@@ -145,7 +192,9 @@ class TelegramBotController:
         source = args[0].lower() if args else None
 
         await update.message.reply_text(
-            f"🔍 Triggering discovery sweep ({source or 'all sources'})..."
+            f"🔍 Triggering discovery sweep ({source or 'all sources'})...\n"
+            "<i>This will evaluate top matches and send preview cards as they finish.</i>",
+            parse_mode=ParseMode.HTML,
         )
 
         sources_to_run = [source] if source else None
@@ -155,15 +204,30 @@ class TelegramBotController:
             await update.message.reply_text("✅ Discovery finished. No new opportunities found.")
             return
 
-        await update.message.reply_text(f"🚀 Found {len(new_ids)} new opportunities! Evaluating & scoring...")
+        limit_to_process = new_ids[: settings.MAX_ALERTS_PER_DAY]
+        await update.message.reply_text(
+            f"🚀 Found {len(new_ids)} new opportunities! Evaluating top {len(limit_to_process)} against your profile..."
+        )
 
+        matched_count = 0
         # Process newly discovered opportunities through LangGraph pipeline
-        for opp_id in new_ids:
-            interrupt_payload = await self.orchestrator.process_opportunity(opp_id)
-            if interrupt_payload and interrupt_payload.get("fit_score", 0) >= settings.MIN_FIT_SCORE:
-                # Send interactive card to Telegram
-                text, keyboard = render_opportunity_card(interrupt_payload)
-                await update.message.reply_text(text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
+        for opp_id in limit_to_process:
+            try:
+                interrupt_payload = await self.orchestrator.process_opportunity(opp_id)
+                if interrupt_payload and interrupt_payload.get("fit_score", 0) >= settings.MIN_FIT_SCORE:
+                    matched_count += 1
+                    await self._send_opportunity_card(update.effective_chat.id, interrupt_payload, context)
+            except Exception as e:
+                logger.error(f"Error processing opp #{opp_id}: {e}", exc_info=True)
+
+        await update.message.reply_text(
+            f"✨ <b>Discovery Sweep Complete!</b>\n"
+            f"• Ingested: {len(new_ids)}\n"
+            f"• Evaluated: {len(limit_to_process)}\n"
+            f"• Cards Sent: {matched_count}\n"
+            f"Use <code>/review</code> anytime to review pending drafts.",
+            parse_mode=ParseMode.HTML,
+        )
 
     async def cmd_set(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle /set [key] [value] command."""
@@ -371,6 +435,7 @@ class TelegramBotController:
         # Add Command Handlers
         app.add_handler(CommandHandler("start", self.cmd_start))
         app.add_handler(CommandHandler("help", self.cmd_start))
+        app.add_handler(CommandHandler("review", self.cmd_review))
         app.add_handler(CommandHandler("status", self.cmd_status))
         app.add_handler(CommandHandler("profile", self.cmd_profile))
         app.add_handler(CommandHandler("discover", self.cmd_discover))
