@@ -1,6 +1,7 @@
 """Interactive Telegram Bot Controller using Long-Polling and Inline Keyboards."""
 
 import asyncio
+import html
 import logging
 import re
 from typing import Any, Dict, Optional

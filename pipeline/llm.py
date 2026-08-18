@@ -154,7 +154,27 @@ class LLMClient:
             {"role": "user", "content": full_prompt},
         ]
 
-        response = await llm.ainvoke(messages)
+        try:
+            response = await llm.ainvoke(messages)
+        except Exception as e:
+            # If primary provider hit a rate limit (429) or token limit and alternative key exists, failover!
+            if ("429" in str(e) or "rate_limit" in str(e).lower()) and self.provider == "groq" and settings.OPENROUTER_API_KEY:
+                logger.warning(f"Groq rate limit encountered ({e}). Automatically failing over to OpenRouter...")
+                fallback_headers = {
+                    "HTTP-Referer": "https://github.com/anurag/job_outreach",
+                    "X-Title": "Personal Job Outreach System",
+                }
+                fallback_client = ChatOpenAI(
+                    model=settings.OPENROUTER_SMART_MODEL if use_smart else settings.OPENROUTER_FAST_MODEL,
+                    api_key=settings.OPENROUTER_API_KEY,
+                    base_url=settings.OPENROUTER_BASE_URL,
+                    temperature=0.2,
+                    default_headers=fallback_headers,
+                )
+                response = await fallback_client.ainvoke(messages)
+            else:
+                raise e
+
         raw_content = response.content.strip()
 
         # Clean reasoning tokens (<think>...</think>), draft outlines, markdown fences
