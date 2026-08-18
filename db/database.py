@@ -534,3 +534,21 @@ def get_pending_approval_opportunities(
         )
         rows = cursor.fetchall()
         return [dict(row) for row in rows]
+
+
+def get_unscored_opportunity_ids(
+    limit: int = 10, db_path: Optional[Path] = None
+) -> List[int]:
+    """Retrieve opportunity IDs that are in 'discovered' status and need scoring."""
+    with get_db_connection(db_path) as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT id FROM opportunities
+            WHERE status = 'discovered'
+            ORDER BY id ASC
+            LIMIT ?
+            """,
+            (limit,),
+        )
+        return [row[0] for row in cursor.fetchall()]

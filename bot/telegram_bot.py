@@ -183,6 +183,35 @@ class TelegramBotController:
         except Exception as e:
             await update.message.reply_text(f"⚠️ Error loading profile: {e}")
 
+    async def cmd_sources(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Display all available Track A and Track B discovery sources."""
+        if not self.is_authorized(update):
+            return
+
+        msg = (
+            "📡 <b>Available Discovery Sources</b>\n\n"
+            "<b>Track A (Active Job Openings):</b>\n"
+            "• <code>ashby</code> — Ashby public startup job boards\n"
+            "• <code>greenhouse</code> — Greenhouse public startup boards\n"
+            "• <code>lever</code> — Lever public startup boards\n\n"
+            "<b>Track B (Early Startups, Launches & Stealth):</b>\n"
+            "• <code>yc</code> — Y Combinator (W25, S24, W24, F24 batches)\n"
+            "• <code>producthunt</code> — Product Hunt trending maker launches\n"
+            "• <code>hackernews</code> (or <code>hn</code>) — Hacker News Launch HN & Show HN\n"
+            "• <code>india</code> — Indian startup funding news (Inc42, Entrackr, YourStory)\n"
+            "• <code>sec_edgar</code> — SEC Form D stealth venture fundings\n"
+            "• <code>vc_stealth</code> — VC portfolio & stealth announcements\n"
+            "• <code>tavily</code> — Live web search sweeps for stealth founders\n"
+            "• <code>watchlist</code> — Hand-curated target startups\n"
+            "• <code>all</code> — Run all 11 discovery connectors concurrently\n\n"
+            "<b>Usage Examples:</b>\n"
+            "• <code>/discover yc</code>\n"
+            "• <code>/discover india</code>\n"
+            "• <code>/discover producthunt</code>\n"
+            "• <code>/discover all</code>"
+        )
+        await update.message.reply_text(msg, parse_mode=ParseMode.HTML)
+
     async def cmd_discover(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle /discover [source] command."""
         if not self.is_authorized(update):
@@ -191,26 +220,38 @@ class TelegramBotController:
         args = context.args or []
         source = args[0].lower() if args else None
 
+        # If user asked for list / help
+        if source in ["list", "sources", "help"]:
+            await self.cmd_sources(update, context)
+            return
+
+        from db.database import get_unscored_opportunity_ids
+
         await update.message.reply_text(
-            f"🔍 Triggering discovery sweep ({source or 'all sources'})...\n"
-            "<i>This will evaluate top matches and send preview cards as they finish.</i>",
+            f"🔍 <b>Triggering discovery sweep ({source or 'all sources'})...</b>\n"
+            "<i>Evaluating matches against your profile and sending preview cards...</i>",
             parse_mode=ParseMode.HTML,
         )
 
         sources_to_run = [source] if source else None
         new_ids = await self.discovery_manager.run_discovery_sweep(sources=sources_to_run, limit_per_source=10)
 
-        if not new_ids:
-            await update.message.reply_text("✅ Discovery finished. No new opportunities found.")
-            return
-
+        # If no new IDs discovered in this sweep, pick up unscored leads from backlog
         limit_to_process = new_ids[: settings.MAX_ALERTS_PER_DAY]
-        await update.message.reply_text(
-            f"🚀 Found {len(new_ids)} new opportunities! Evaluating top {len(limit_to_process)} against your profile..."
-        )
+        if not limit_to_process:
+            backlog_ids = get_unscored_opportunity_ids(limit=settings.MAX_ALERTS_PER_DAY)
+            if backlog_ids:
+                await update.message.reply_text(
+                    f"📦 Found <b>{len(backlog_ids)} unscored opportunities</b> in backlog. Evaluating now...",
+                    parse_mode=ParseMode.HTML,
+                )
+                limit_to_process = backlog_ids
+            else:
+                await update.message.reply_text("✅ All discovered opportunities have already been scored!")
+                return
 
         matched_count = 0
-        # Process newly discovered opportunities through LangGraph pipeline
+        # Process opportunities through LangGraph pipeline
         for opp_id in limit_to_process:
             try:
                 interrupt_payload = await self.orchestrator.process_opportunity(opp_id)
@@ -221,10 +262,9 @@ class TelegramBotController:
                 logger.error(f"Error processing opp #{opp_id}: {e}", exc_info=True)
 
         await update.message.reply_text(
-            f"✨ <b>Discovery Sweep Complete!</b>\n"
-            f"• Ingested: {len(new_ids)}\n"
+            f"✨ <b>Evaluation Complete!</b>\n"
             f"• Evaluated: {len(limit_to_process)}\n"
-            f"• Cards Sent: {matched_count}\n"
+            f"• High-Fit Cards Sent: {matched_count}\n"
             f"Use <code>/review</code> anytime to review pending drafts.",
             parse_mode=ParseMode.HTML,
         )
@@ -436,6 +476,7 @@ class TelegramBotController:
         app.add_handler(CommandHandler("start", self.cmd_start))
         app.add_handler(CommandHandler("help", self.cmd_start))
         app.add_handler(CommandHandler("review", self.cmd_review))
+        app.add_handler(CommandHandler("sources", self.cmd_sources))
         app.add_handler(CommandHandler("status", self.cmd_status))
         app.add_handler(CommandHandler("profile", self.cmd_profile))
         app.add_handler(CommandHandler("discover", self.cmd_discover))
