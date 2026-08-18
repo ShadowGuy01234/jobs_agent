@@ -21,6 +21,11 @@ class Settings(BaseSettings):
     DATABASE_PATH: Path = BASE_DIR / "data" / "outreach.db"
     BACKUP_DIR: Path = BASE_DIR / "data" / "backups"
 
+    # LLM Provider Toggle ('openrouter' or 'groq')
+    LLM_PROVIDER: str = Field(
+        default="openrouter", description="LLM Provider: 'openrouter' or 'groq'"
+    )
+
     # OpenRouter AI Gateway
     OPENROUTER_API_KEY: str = Field(default="", description="OpenRouter API Key")
     OPENROUTER_BASE_URL: str = Field(
@@ -32,6 +37,18 @@ class Settings(BaseSettings):
     OPENROUTER_SMART_MODEL: str = Field(
         default="deepseek/deepseek-chat",
         description="Smart reasoning & drafting model",
+    )
+
+    # Groq AI Gateway
+    GROQ_API_KEY: Optional[str] = Field(default=None, description="Groq API Key")
+    GROQ_BASE_URL: str = Field(
+        default="https://api.groq.com/openai/v1", description="Groq Base URL"
+    )
+    GROQ_FAST_MODEL: str = Field(
+        default="llama-3.1-8b-instant", description="Groq fast model"
+    )
+    GROQ_SMART_MODEL: str = Field(
+        default="llama-3.3-70b-versatile", description="Groq smart model"
     )
 
     # Search & Enrichment APIs

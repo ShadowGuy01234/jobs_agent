@@ -1,4 +1,4 @@
-"""OpenRouter LLM Gateway client with structured output support."""
+"""Unified LLM Gateway client supporting OpenRouter and Groq with structured output."""
 
 import json
 import logging
@@ -14,19 +14,30 @@ T = TypeVar("T", bound=BaseModel)
 
 
 class LLMClient:
-    """Unified OpenRouter LLM client supporting fast and smart reasoning models."""
+    """Unified LLM client supporting OpenRouter and Groq providers."""
 
     def __init__(
         self,
+        provider: Optional[str] = None,
         api_key: Optional[str] = None,
         base_url: Optional[str] = None,
         fast_model: Optional[str] = None,
         smart_model: Optional[str] = None,
     ):
-        self.api_key = api_key or settings.OPENROUTER_API_KEY
-        self.base_url = base_url or settings.OPENROUTER_BASE_URL
-        self.fast_model = fast_model or settings.OPENROUTER_FAST_MODEL
-        self.smart_model = smart_model or settings.OPENROUTER_SMART_MODEL
+        self.provider = (provider or settings.LLM_PROVIDER).lower()
+
+        if self.provider == "groq":
+            self.api_key = api_key or settings.GROQ_API_KEY or ""
+            self.base_url = base_url or settings.GROQ_BASE_URL
+            self.fast_model = fast_model or settings.GROQ_FAST_MODEL
+            self.smart_model = smart_model or settings.GROQ_SMART_MODEL
+        else:
+            # Default to OpenRouter
+            self.provider = "openrouter"
+            self.api_key = api_key or settings.OPENROUTER_API_KEY or ""
+            self.base_url = base_url or settings.OPENROUTER_BASE_URL
+            self.fast_model = fast_model or settings.OPENROUTER_FAST_MODEL
+            self.smart_model = smart_model or settings.OPENROUTER_SMART_MODEL
 
     def get_chat_model(
         self,
@@ -34,18 +45,21 @@ class LLMClient:
         temperature: float = 0.2,
         max_tokens: Optional[int] = None,
     ) -> ChatOpenAI:
-        """Create a ChatOpenAI instance configured for OpenRouter."""
-        headers = {
-            "HTTP-Referer": "https://github.com/anurag/job_outreach",
-            "X-Title": "Personal Job Outreach System",
-        }
+        """Create a ChatOpenAI instance configured for the active provider."""
+        headers = {}
+        if self.provider == "openrouter":
+            headers = {
+                "HTTP-Referer": "https://github.com/anurag/job_outreach",
+                "X-Title": "Personal Job Outreach System",
+            }
+
         return ChatOpenAI(
             model=model_name,
             api_key=self.api_key or "sk-dummy-key",
             base_url=self.base_url,
             temperature=temperature,
             max_tokens=max_tokens,
-            default_headers=headers,
+            default_headers=headers if headers else None,
         )
 
     def get_fast_llm(self, temperature: float = 0.1) -> ChatOpenAI:
@@ -100,5 +114,5 @@ class LLMClient:
             data = json.loads(content)
             return response_schema.model_validate(data)
         except Exception as e:
-            logger.error(f"Failed to parse LLM structured JSON: {e}\nRaw Content:\n{content}")
+            logger.error(f"Failed to parse LLM structured JSON ({self.provider}/{llm.model_name}): {e}\nRaw Content:\n{content}")
             raise ValueError(f"LLM did not return valid JSON for schema {response_schema.__name__}: {e}")
