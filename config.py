@@ -20,6 +20,8 @@ class Settings(BaseSettings):
     USER_PROFILE_PATH: Path = BASE_DIR / "user_profile.yaml"
     DATABASE_PATH: Path = BASE_DIR / "data" / "outreach.db"
     BACKUP_DIR: Path = BASE_DIR / "data" / "backups"
+    LOGS_DIR: Path = BASE_DIR / "data" / "logs"
+    LOG_FILE_PATH: Path = BASE_DIR / "data" / "logs" / "outreach.log"
 
     # LLM Provider Toggle ('openrouter' or 'groq')
     LLM_PROVIDER: str = Field(

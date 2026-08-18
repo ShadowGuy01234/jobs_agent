@@ -16,7 +16,33 @@ from discovery.manager import DiscoveryManager
 from heartbeat import run_anti_idle_pulse
 from scheduler import OutreachScheduler
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+import logging
+from logging.handlers import RotatingFileHandler
+
+# Ensure logs directory exists
+settings.LOGS_DIR.mkdir(parents=True, exist_ok=True)
+
+# Configure logging with both Console and Rotating File Handlers
+log_formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+
+file_handler = RotatingFileHandler(
+    settings.LOG_FILE_PATH,
+    maxBytes=5 * 1024 * 1024,  # 5 MB
+    backupCount=5,
+    encoding="utf-8",
+)
+file_handler.setFormatter(log_formatter)
+file_handler.setLevel(logging.INFO)
+
+console_handler = logging.StreamHandler()
+console_handler.setFormatter(log_formatter)
+console_handler.setLevel(logging.INFO)
+
+root_logger = logging.getLogger()
+root_logger.setLevel(logging.INFO)
+root_logger.addHandler(file_handler)
+root_logger.addHandler(console_handler)
+
 logger = logging.getLogger("app")
 
 bot_controller: Optional[TelegramBotController] = None

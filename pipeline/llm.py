@@ -2,6 +2,7 @@
 
 import json
 import logging
+import re
 from typing import Any, Dict, Optional, Type, TypeVar
 from langchain_openai import ChatOpenAI
 from pydantic import BaseModel
@@ -11,6 +12,36 @@ from config import settings
 logger = logging.getLogger(__name__)
 
 T = TypeVar("T", bound=BaseModel)
+
+
+def extract_json_from_text(text: str) -> str:
+    """Robustly extract valid JSON from LLM output containing reasoning tags, markdown fences, or preamble."""
+    if not text:
+        return ""
+
+    # 1. Remove thinking / reasoning tags (<think>...</think> or orphaned </think>)
+    cleaned = re.sub(r"<think>[\s\S]*?</think>", "", text, flags=re.IGNORECASE).strip()
+    if "</think>" in cleaned:
+        cleaned = cleaned.split("</think>")[-1].strip()
+
+    # 2. Extract content within markdown code fences ```json ... ``` or ``` ... ```
+    fence_match = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", cleaned, re.IGNORECASE)
+    if fence_match:
+        return fence_match.group(1).strip()
+
+    # 3. Extract outermost JSON object { ... }
+    first_brace = cleaned.find("{")
+    last_brace = cleaned.rfind("}")
+    if first_brace != -1 and last_brace != -1 and last_brace > first_brace:
+        return cleaned[first_brace : last_brace + 1].strip()
+
+    # 4. Extract outermost JSON array [ ... ]
+    first_bracket = cleaned.find("[")
+    last_bracket = cleaned.rfind("]")
+    if first_bracket != -1 and last_bracket != -1 and last_bracket > first_bracket:
+        return cleaned[first_bracket : last_bracket + 1].strip()
+
+    return cleaned.strip()
 
 
 class LLMClient:
@@ -99,20 +130,20 @@ class LLMClient:
         ]
 
         response = await llm.ainvoke(messages)
-        content = response.content.strip()
+        raw_content = response.content.strip()
 
-        # Clean potential markdown wrapping ```json ... ```
-        if content.startswith("```"):
-            lines = content.split("\n")
-            if lines[0].startswith("```"):
-                lines = lines[1:]
-            if lines and lines[-1].startswith("```"):
-                lines = lines[:-1]
-            content = "\n".join(lines).strip()
+        # Clean reasoning tokens (<think>...</think>), markdown fences, preamble
+        extracted_json = extract_json_from_text(raw_content)
 
         try:
-            data = json.loads(content)
+            data = json.loads(extracted_json)
             return response_schema.model_validate(data)
         except Exception as e:
-            logger.error(f"Failed to parse LLM structured JSON ({self.provider}/{llm.model_name}): {e}\nRaw Content:\n{content}")
-            raise ValueError(f"LLM did not return valid JSON for schema {response_schema.__name__}: {e}")
+            logger.error(
+                f"Failed to parse LLM structured JSON ({self.provider}/{llm.model_name}): {e}\n"
+                f"Extracted JSON:\n{extracted_json}\n"
+                f"Raw Content:\n{raw_content}"
+            )
+            raise ValueError(
+                f"LLM did not return valid JSON for schema {response_schema.__name__}: {e}"
+            )

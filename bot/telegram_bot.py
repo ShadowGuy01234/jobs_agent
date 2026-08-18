@@ -112,6 +112,7 @@ class TelegramBotController:
             "• <code>/discover [source]</code> — Trigger on-demand discovery (e.g. <code>/discover yc</code>)\n"
             "• <code>/set min_score [number]</code> — Update minimum fit score (e.g. <code>/set min_score 80</code>)\n"
             "• <code>/dry_run [on|off]</code> — Toggle dry-run email sending mode\n"
+            "• <code>/logs</code> — View recent diagnostic logs for debugging\n"
             "• <code>/help</code> — Show this menu\n"
         )
         await update.message.reply_text(msg, parse_mode=ParseMode.HTML)
@@ -251,9 +252,11 @@ class TelegramBotController:
                 return
 
         matched_count = 0
-        # Process opportunities through LangGraph pipeline
-        for opp_id in limit_to_process:
+        # Process opportunities through LangGraph pipeline with slight rate-limit throttling
+        for i, opp_id in enumerate(limit_to_process):
             try:
+                if i > 0:
+                    await asyncio.sleep(1.5)  # 1.5s delay to prevent provider rate limits
                 interrupt_payload = await self.orchestrator.process_opportunity(opp_id)
                 if interrupt_payload and interrupt_payload.get("fit_score", 0) >= settings.MIN_FIT_SCORE:
                     matched_count += 1
@@ -268,6 +271,33 @@ class TelegramBotController:
             f"Use <code>/review</code> anytime to review pending drafts.",
             parse_mode=ParseMode.HTML,
         )
+
+    async def cmd_logs(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handle /logs command to view recent diagnostic log output."""
+        if not self.is_authorized(update):
+            return
+
+        log_path = settings.LOG_FILE_PATH
+        if not log_path.exists():
+            await update.message.reply_text("ℹ️ No log file found yet.")
+            return
+
+        try:
+            with open(log_path, "r", encoding="utf-8", errors="ignore") as f:
+                lines = f.readlines()
+                recent_lines = lines[-20:] if len(lines) >= 20 else lines
+                log_snippet = "".join(recent_lines)
+
+            if len(log_snippet) > 3500:
+                log_snippet = log_snippet[-3500:]
+
+            escaped = html.escape(log_snippet)
+            await update.message.reply_text(
+                f"📋 <b>Recent Diagnostic Logs:</b>\n<pre>{escaped}</pre>",
+                parse_mode=ParseMode.HTML,
+            )
+        except Exception as e:
+            await update.message.reply_text(f"⚠️ Error reading log file: {e}")
 
     async def cmd_set(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle /set [key] [value] command."""
@@ -480,6 +510,7 @@ class TelegramBotController:
         app.add_handler(CommandHandler("status", self.cmd_status))
         app.add_handler(CommandHandler("profile", self.cmd_profile))
         app.add_handler(CommandHandler("discover", self.cmd_discover))
+        app.add_handler(CommandHandler("logs", self.cmd_logs))
         app.add_handler(CommandHandler("set", self.cmd_set))
         app.add_handler(CommandHandler("dry_run", self.cmd_dry_run))
 
