@@ -229,8 +229,11 @@ Instructions:
             response_schema=ContactInfoResult,
             use_smart=False,
         )
-        if known_founder and contact_res.name in ["Founding Team", "Unknown", None]:
+        if known_founder:
             contact_res.name = known_founder
+            if domain and (not contact_res.email or not contact_res.email.endswith(f"@{domain}")):
+                first = re.sub(r"[^a-zA-Z]", "", known_founder.split()[0].lower())
+                contact_res.email = f"{first}@{domain}"
         return contact_res
     except Exception as e:
         logger.warning(f"LLM contact extraction fallback: {e}")
