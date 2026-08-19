@@ -108,9 +108,11 @@ class TelegramBotController:
             f"Your Chat ID: <code>{user_chat_id}</code>\n\n"
             "<b>Available Commands:</b>\n"
             "• <code>/review</code> — Review all opportunities pending approval\n"
+            "• <code>/clear</code> — Clear pending reviews and backlog queue (e.g. <code>/clear reviews</code>)\n"
             "• <code>/status</code> — View discovery & outreach metrics\n"
             "• <code>/profile</code> — View your profile & targeting criteria\n"
             "• <code>/discover [source]</code> — Trigger on-demand discovery (e.g. <code>/discover yc</code>)\n"
+            "• <code>/sources</code> — List all 11 discovery connectors\n"
             "• <code>/set min_score [number]</code> — Update minimum fit score (e.g. <code>/set min_score 80</code>)\n"
             "• <code>/dry_run [on|off]</code> — Toggle dry-run email sending mode\n"
             "• <code>/logs</code> — View recent diagnostic logs for debugging\n"
@@ -485,6 +487,45 @@ class TelegramBotController:
             await query.edit_message_reply_markup(reply_markup=None)
             await query.message.reply_text("🔒 Follow-up thread closed.")
 
+    async def cmd_clear(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handle /clear [all|reviews|backlog] command."""
+        if not self.is_authorized(update):
+            return
+
+        from db.database import (
+            clear_all_pending_and_unexplored,
+            clear_pending_reviews,
+            clear_unexplored_backlog,
+        )
+
+        args = context.args or []
+        target = args[0].lower() if args else "all"
+
+        if target in ["reviews", "pending", "cards"]:
+            count = clear_pending_reviews()
+            msg = (
+                f"🧹 <b>Pending Reviews Cleared!</b>\n\n"
+                f"• Dismissed <b>{count}</b> pending approval cards.\n"
+                "• Your review queue is now clean."
+            )
+        elif target in ["backlog", "unexplored", "unscored"]:
+            count = clear_unexplored_backlog()
+            msg = (
+                f"🧹 <b>Unexplored Backlog Cleared!</b>\n\n"
+                f"• Filtered <b>{count}</b> unscored backlog opportunities.\n"
+                "• Ready for fresh discovery sweeps."
+            )
+        else:  # "all" or default
+            pending_count, backlog_count = clear_all_pending_and_unexplored()
+            msg = (
+                f"🧹 <b>Full Cleanup Completed!</b>\n\n"
+                f"• <b>Pending Reviews Cleared:</b> {pending_count}\n"
+                f"• <b>Unexplored Backlog Cleared:</b> {backlog_count}\n\n"
+                "✅ All pending cards and backlog queues are cleared."
+            )
+
+        await update.message.reply_text(msg, parse_mode=ParseMode.HTML)
+
     # ==========================================================================
     # 💬 TEXT MESSAGE LISTENER (FOR DRAFT EDITS & EMAIL INPUT)
     # ==========================================================================
@@ -505,27 +546,41 @@ class TelegramBotController:
 
         if mode == "awaiting_draft_edit":
             del self.user_sessions[chat_id]
-            # Fetch draft ID for this opportunity
+            # Fetch draft ID for this opportunity and update
             with get_db_connection() as conn:
                 cursor = conn.cursor()
-                cursor.execute("SELECT id FROM outreach_drafts WHERE opportunity_id = ? ORDER BY id DESC LIMIT 1", (opp_id,))
+                cursor.execute(
+                    "SELECT id FROM outreach_drafts WHERE opportunity_id = ? ORDER BY id DESC LIMIT 1",
+                    (opp_id,),
+                )
                 row = cursor.fetchone()
                 if row:
                     update_draft_body(row["id"], body=text, status="edited", notes="Edited via Telegram")
 
-            await update.message.reply_text(
-                f"✅ <b>Draft updated for Opp #{opp_id}!</b>\n\n"
-                f"Updated text:\n────────────────\n{text}\n────────────────\n\n"
-                f"Tap <b>Approve & Send</b> to dispatch.",
-                parse_mode=ParseMode.HTML,
-            )
+            from db.database import get_opportunity_card_payload
+            card_payload = get_opportunity_card_payload(opp_id)
 
-            # Prompt to resume with edited draft
-            await self.orchestrator.resume_opportunity(
-                opportunity_id=opp_id,
-                action="approve",
-                edited_body=text,
-            )
+            if card_payload:
+                card_payload["draft_body"] = text
+                await self._send_opportunity_card(update.effective_chat.id, card_payload, context)
+            else:
+                from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+                buttons = [
+                    [
+                        InlineKeyboardButton("✅ Approve & Send", callback_data=f"approve_{opp_id}"),
+                        InlineKeyboardButton("✏️ Edit Draft", callback_data=f"edit_{opp_id}"),
+                    ],
+                    [
+                        InlineKeyboardButton("❌ Reject", callback_data=f"reject_{opp_id}"),
+                    ],
+                ]
+                await update.message.reply_text(
+                    f"✅ <b>Draft updated for Opp #{opp_id}!</b>\n\n"
+                    f"<b>Updated Email Text:</b>\n────────────────\n{html.escape(text)}\n────────────────\n\n"
+                    f"Tap <b>Approve & Send</b> to dispatch.",
+                    reply_markup=InlineKeyboardMarkup(buttons),
+                    parse_mode=ParseMode.HTML,
+                )
 
         elif mode == "awaiting_email_input":
             del self.user_sessions[chat_id]
@@ -548,11 +603,30 @@ class TelegramBotController:
                 if row:
                     update_contact_email(row["id"], email=text, confidence="verified")
 
-            await update.message.reply_text(
-                f"✅ <b>Email saved for Opp #{opp_id}:</b> <code>{text}</code>\n\n"
-                f"Ready for dispatch.",
-                parse_mode=ParseMode.HTML,
-            )
+            from db.database import get_opportunity_card_payload
+            card_payload = get_opportunity_card_payload(opp_id)
+
+            if card_payload:
+                card_payload["contact_email"] = text
+                card_payload["email_confidence"] = "verified"
+                await self._send_opportunity_card(update.effective_chat.id, card_payload, context)
+            else:
+                from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+                buttons = [
+                    [
+                        InlineKeyboardButton("✅ Approve & Send", callback_data=f"approve_{opp_id}"),
+                        InlineKeyboardButton("✏️ Edit Draft", callback_data=f"edit_{opp_id}"),
+                    ],
+                    [
+                        InlineKeyboardButton("❌ Reject", callback_data=f"reject_{opp_id}"),
+                    ],
+                ]
+                await update.message.reply_text(
+                    f"✅ <b>Email saved for Opp #{opp_id}:</b> <code>{html.escape(text)}</code>\n\n"
+                    f"Tap <b>Approve & Send</b> to dispatch.",
+                    reply_markup=InlineKeyboardMarkup(buttons),
+                    parse_mode=ParseMode.HTML,
+                )
 
     # ==========================================================================
     # 🚀 BOT INITIALIZATION & POLLING
@@ -569,6 +643,8 @@ class TelegramBotController:
         app.add_handler(CommandHandler("start", self.cmd_start))
         app.add_handler(CommandHandler("help", self.cmd_start))
         app.add_handler(CommandHandler("review", self.cmd_review))
+        app.add_handler(CommandHandler("clear", self.cmd_clear))
+        app.add_handler(CommandHandler("purge", self.cmd_clear))
         app.add_handler(CommandHandler("sources", self.cmd_sources))
         app.add_handler(CommandHandler("status", self.cmd_status))
         app.add_handler(CommandHandler("profile", self.cmd_profile))

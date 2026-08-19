@@ -75,3 +75,66 @@ def test_fastapi_health_endpoints():
         status_data = status_resp.json()
         assert status_data["status"] == "running"
         assert "metrics" in status_data
+
+
+def test_clear_reviews_and_backlog(temp_db):
+    """Test clearing pending reviews and unexplored backlog opportunities."""
+    from db.database import (
+        clear_all_pending_and_unexplored,
+        clear_pending_reviews,
+        clear_unexplored_backlog,
+        get_or_create_company,
+        get_opportunity_card_payload,
+        save_draft,
+        save_opportunity,
+        update_opportunity_status,
+    )
+
+    company_id = get_or_create_company(
+        domain="testai.io", name="TestAI", db_path=temp_db
+    )
+    opp1 = save_opportunity(
+        company_id=company_id,
+        type_="founder_reachout",
+        title="Test Match 1",
+        url="https://testai.io/job/1",
+        db_path=temp_db,
+    )
+    opp2 = save_opportunity(
+        company_id=company_id,
+        type_="founder_reachout",
+        title="Test Match 2",
+        url="https://testai.io/job/2",
+        db_path=temp_db,
+    )
+    save_draft(opp1, None, subject="Quick note", body="Draft text", db_path=temp_db)
+    update_opportunity_status(opp1, "pending_approval", db_path=temp_db)
+
+    # Verify payload fetch
+    payload = get_opportunity_card_payload(opp1, db_path=temp_db)
+    assert payload is not None
+    assert payload["company_name"] == "TestAI"
+    assert payload["draft_subject"] == "Quick note"
+
+    # Test clear pending reviews
+    cleared_pending = clear_pending_reviews(db_path=temp_db)
+    assert cleared_pending == 1
+
+    # Test clear backlog
+    cleared_backlog = clear_unexplored_backlog(db_path=temp_db)
+    assert cleared_backlog == 1
+
+    # Test clear all
+    opp3 = save_opportunity(
+        company_id=company_id,
+        type_="founder_reachout",
+        title="Test Match 3",
+        url="https://testai.io/job/3",
+        db_path=temp_db,
+    )
+    update_opportunity_status(opp3, "pending_approval", db_path=temp_db)
+    p_cnt, b_cnt = clear_all_pending_and_unexplored(db_path=temp_db)
+    assert p_cnt == 1
+    assert b_cnt == 0
+
+

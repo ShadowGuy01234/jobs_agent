@@ -574,3 +574,60 @@ def get_opportunity_evaluation_summary(
         )
         row = cursor.fetchone()
         return dict(row) if row else None
+
+
+def get_opportunity_card_payload(
+    opportunity_id: int, db_path: Optional[Path] = None
+) -> Optional[Dict[str, Any]]:
+    """Retrieve full opportunity card payload for rendering."""
+    with get_db_connection(db_path) as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT o.id as opportunity_id, o.type as opportunity_type, o.title, o.url,
+                   c.name as company_name, c.domain as company_domain, c.stage as enriched_stage,
+                   c.funding_info as funding_summary,
+                   e.fit_score, e.summary_reasoning,
+                   ct.name as contact_name, ct.title as contact_title, ct.email as contact_email,
+                   ct.email_confidence, ct.linkedin_url,
+                   d.subject as draft_subject, d.body as draft_body
+            FROM opportunities o
+            JOIN companies c ON o.company_id = c.id
+            LEFT JOIN evaluations e ON o.id = e.opportunity_id
+            LEFT JOIN contacts ct ON c.id = ct.company_id
+            LEFT JOIN outreach_drafts d ON o.id = d.opportunity_id
+            WHERE o.id = ?
+            ORDER BY d.id DESC, ct.id DESC LIMIT 1
+            """,
+            (opportunity_id,),
+        )
+        row = cursor.fetchone()
+        return dict(row) if row else None
+
+
+def clear_pending_reviews(db_path: Optional[Path] = None) -> int:
+    """Clear all pending approval reviews by marking them as rejected."""
+    with get_db_connection(db_path) as conn:
+        cursor = conn.cursor()
+        cursor.execute("UPDATE opportunities SET status = 'rejected' WHERE status = 'pending_approval'")
+        count = cursor.rowcount
+        conn.commit()
+        return count
+
+
+def clear_unexplored_backlog(db_path: Optional[Path] = None) -> int:
+    """Clear all unexplored/unscored opportunities by marking them as filtered."""
+    with get_db_connection(db_path) as conn:
+        cursor = conn.cursor()
+        cursor.execute("UPDATE opportunities SET status = 'filtered' WHERE status = 'discovered'")
+        count = cursor.rowcount
+        conn.commit()
+        return count
+
+
+def clear_all_pending_and_unexplored(db_path: Optional[Path] = None) -> Tuple[int, int]:
+    """Clear both pending reviews and unexplored opportunities."""
+    pending_count = clear_pending_reviews(db_path=db_path)
+    backlog_count = clear_unexplored_backlog(db_path=db_path)
+    return pending_count, backlog_count
+
