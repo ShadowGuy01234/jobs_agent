@@ -57,17 +57,21 @@ async def lifespan(app: FastAPI):
     logger.info("Initializing SQLite database...")
     init_db()
 
-    # Initialize Telegram Bot (if token configured)
-    if settings.TELEGRAM_BOT_TOKEN:
-        logger.info("Initializing Telegram Bot Controller...")
-        bot_controller = TelegramBotController()
-        telegram_app = bot_controller.build_application()
-        await telegram_app.initialize()
-        await telegram_app.start()
-        await telegram_app.updater.start_polling()
-        logger.info("Telegram Bot long-polling started.")
+    # Initialize Telegram Bot (if token configured and not placeholder)
+    if settings.TELEGRAM_BOT_TOKEN and not settings.TELEGRAM_BOT_TOKEN.startswith("your_"):
+        try:
+            logger.info("Initializing Telegram Bot Controller...")
+            bot_controller = TelegramBotController()
+            telegram_app = bot_controller.build_application()
+            await telegram_app.initialize()
+            await telegram_app.start()
+            await telegram_app.updater.start_polling()
+            logger.info("Telegram Bot long-polling started.")
+        except Exception as e:
+            logger.warning(f"Telegram Bot initialization skipped/failed: {e}. Running in headless mode.")
+            telegram_app = None
     else:
-        logger.warning("TELEGRAM_BOT_TOKEN not configured. Running in headless mode.")
+        logger.warning("TELEGRAM_BOT_TOKEN not configured or placeholder. Running in headless mode.")
 
     # Start APScheduler
     logger.info("Starting background scheduler...")
@@ -81,9 +85,14 @@ async def lifespan(app: FastAPI):
     if scheduler_instance:
         scheduler_instance.shutdown()
     if telegram_app:
-        await telegram_app.updater.stop()
-        await telegram_app.stop()
-        await telegram_app.shutdown()
+        try:
+            if hasattr(telegram_app, "updater") and telegram_app.updater and telegram_app.updater.running:
+                await telegram_app.updater.stop()
+            if hasattr(telegram_app, "running") and telegram_app.running:
+                await telegram_app.stop()
+            await telegram_app.shutdown()
+        except Exception as e:
+            logger.warning(f"Telegram Bot shutdown notice: {e}")
     logger.info("All services shut down cleanly.")
 
 
