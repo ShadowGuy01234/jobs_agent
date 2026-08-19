@@ -234,6 +234,8 @@ Instructions:
             if domain and (not contact_res.email or not contact_res.email.endswith(f"@{domain}")):
                 first = re.sub(r"[^a-zA-Z]", "", known_founder.split()[0].lower())
                 contact_res.email = f"{first}@{domain}"
+                if contact_res.email_confidence == "missing":
+                    contact_res.email_confidence = "low_confidence"
         return contact_res
     except Exception as e:
         logger.warning(f"LLM contact extraction fallback: {e}")
