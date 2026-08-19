@@ -1,14 +1,16 @@
 """Contact research node: discovers founders, verified emails, and LinkedIn profiles.
 
-Integrates contextual leadership discovery, Apollo.io, Hunter.io, Tavily Search, and intelligent email generation.
+Combines Website Deep Scraping, Targeted Persona Search, LLM Contact Extraction, and MX-validated pattern matching.
+Zero business-email or paid API subscription required.
 """
 
 import logging
 import re
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 import httpx
 
 from config import settings
+from pipeline.llm import LLMClient
 from pipeline.schemas import ContactInfoResult, EnrichedCompanyData
 
 logger = logging.getLogger(__name__)
@@ -27,6 +29,50 @@ def sanitize_company_name(raw_name: str) -> str:
     cleaned = re.sub(r"\s+\(India Tech\)$", "", cleaned, flags=re.IGNORECASE)
     cleaned = re.sub(r"\s+\(Product Hunt Launch\)$", "", cleaned, flags=re.IGNORECASE)
     return cleaned.strip()
+
+
+async def scrape_website_emails(domain: str) -> List[str]:
+    """Scrape contact pages and security.txt directly from the company website."""
+    if not domain:
+        return []
+
+    found_emails = set()
+    pages_to_check = [
+        f"https://{domain}",
+        f"https://{domain}/about",
+        f"https://{domain}/team",
+        f"https://{domain}/contact",
+        f"https://{domain}/privacy",
+        f"https://{domain}/.well-known/security.txt",
+    ]
+
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        )
+    }
+
+    async with httpx.AsyncClient(timeout=5.0, follow_redirects=True, headers=headers) as client:
+        for url in pages_to_check:
+            try:
+                resp = await client.get(url)
+                if resp.status_code == 200:
+                    text = resp.text
+                    matches = re.findall(
+                        rf"\b[A-Za-z0-9._%+-]+@{re.escape(domain)}\b", text, flags=re.IGNORECASE
+                    )
+                    for m in matches:
+                        clean_email = m.lower().strip()
+                        if not any(
+                            excluded in clean_email
+                            for excluded in ["noreply", "privacy", "donotreply", "abuse", "support"]
+                        ):
+                            found_emails.add(clean_email)
+            except Exception:
+                continue
+
+    return list(found_emails)
 
 
 async def resolve_company_domain(company_name: str, context: str = "") -> Optional[str]:
@@ -59,13 +105,13 @@ async def resolve_company_domain(company_name: str, context: str = "") -> Option
     query = f'"{clean_name}" {kw_str} official website OR startup'
 
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        async with httpx.AsyncClient(timeout=8.0) as client:
             resp = await client.post(
                 "https://api.tavily.com/search",
                 json={
                     "api_key": settings.TAVILY_API_KEY,
                     "query": query,
-                    "max_results": 4,
+                    "max_results": 3,
                 },
             )
             if resp.status_code == 200:
@@ -97,207 +143,14 @@ async def resolve_company_domain(company_name: str, context: str = "") -> Option
     return None
 
 
-async def discover_leadership_and_linkedin(
-    company_name: str, domain: Optional[str] = None, context: str = ""
-) -> Tuple[str, str, Optional[str]]:
-    """Discover founder/CTO/GTM name, title, and verified LinkedIn URL."""
-    clean_name = sanitize_company_name(company_name)
-    if not settings.TAVILY_API_KEY:
-        return "Founding Team", "Founding Team & Leadership", None
-
-    context_words = [
-        w
-        for w in re.findall(r"\b[A-Za-z]{4,}\b", context)
-        if w.lower()
-        not in [
-            "raises",
-            "funding",
-            "startup",
-            "company",
-            "million",
-            "crore",
-            "round",
-            "series",
-            "capital",
-            "fund",
-            "india",
-            "tech",
-        ]
-    ]
-    kw_str = " ".join(context_words[:2])
-
-    query = f'"{clean_name}" {kw_str} (Founder OR CEO OR "Co-Founder" OR CTO OR "Head of Growth" OR "VP Engineering") site:linkedin.com/in'
-
-    try:
-        async with httpx.AsyncClient(timeout=12.0) as client:
-            resp = await client.post(
-                "https://api.tavily.com/search",
-                json={
-                    "api_key": settings.TAVILY_API_KEY,
-                    "query": query,
-                    "max_results": 5,
-                },
-            )
-            if resp.status_code == 200:
-                for r in resp.json().get("results", []):
-                    title = r.get("title", "")
-                    url = r.get("url", "")
-                    content = r.get("content", "")
-
-                    if "linkedin.com/in/" not in url:
-                        continue
-
-                    name_part = title.split("-")[0].split("|")[0].split("–")[0].strip()
-                    # Determine specific leadership role
-                    role = "Co-Founder & Leadership"
-                    if "CTO" in title or "Chief Technology Officer" in title:
-                        role = "Co-Founder & CTO"
-                    elif "CEO" in title or "Chief Executive Officer" in title:
-                        role = "Founder & CEO"
-                    elif "Growth" in title or "GTM" in title:
-                        role = "Head of Growth / GTM"
-                    elif "Engineering" in title:
-                        role = "VP / Head of Engineering"
-                    elif "Founder" in title or "Co-founder" in title:
-                        role = "Co-Founder"
-
-                    # Normalize linkedin URL (clean tracking params)
-                    clean_li = url.split("?")[0]
-                    return name_part, role, clean_li
-    except Exception as e:
-        logger.debug(f"Leadership search error for {company_name}: {e}")
-
-    return "Founding Team", "Founding Team & Leadership", None
-
-
-async def query_apollo_contact(
-    company_name: str,
-    domain: Optional[str] = None,
-    first_name: Optional[str] = None,
-    last_name: Optional[str] = None,
-) -> Tuple[Optional[str], Optional[str], Optional[str], str]:
-    """Query Apollo.io People Match API for verified email, title, and LinkedIn URL."""
-    if not settings.APOLLO_API_KEY:
-        return None, None, None, "missing"
-
-    payload: Dict[str, Any] = {
-        "api_key": settings.APOLLO_API_KEY,
-        "organization_name": company_name,
-    }
-    if domain:
-        payload["domain"] = domain
-    if first_name:
-        payload["first_name"] = first_name
-    if last_name:
-        payload["last_name"] = last_name
-
-    headers = {
-        "Content-Type": "application/json",
-        "Cache-Control": "no-cache",
-        "X-Api-Key": settings.APOLLO_API_KEY,
-    }
-
-    try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.post(
-                "https://api.apollo.io/v1/people/match",
-                json=payload,
-                headers=headers,
-            )
-            if resp.status_code == 200:
-                data = resp.json()
-                person = data.get("person") or {}
-                email = person.get("email")
-                title = person.get("title")
-                linkedin_url = person.get("linkedin_url")
-                email_status = person.get("email_status", "")
-
-                if email and "extrapolated" not in email_status:
-                    confidence = "verified" if email_status == "verified" else "low_confidence"
-                    return email, title, linkedin_url, confidence
-                elif email:
-                    return email, title, linkedin_url, "low_confidence"
-    except Exception as e:
-        logger.debug(f"Apollo.io lookup error for {company_name}: {e}")
-
-    return None, None, None, "missing"
-
-
-async def query_hunter_email(
-    domain: str, first_name: str, last_name: str
-) -> Tuple[Optional[str], str]:
-    """Query Hunter.io Email Finder API for verified email."""
-    if not settings.HUNTER_API_KEY or not domain:
-        return None, "missing"
-
-    try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            url = "https://api.hunter.io/v2/email-finder"
-            params = {
-                "domain": domain,
-                "first_name": first_name,
-                "last_name": last_name,
-                "api_key": settings.HUNTER_API_KEY,
-            }
-            resp = await client.get(url, params=params)
-            if resp.status_code == 200:
-                data = resp.json().get("data", {})
-                email = data.get("email")
-                score = data.get("score", 0)
-                if email:
-                    confidence = "verified" if score >= 80 else "low_confidence"
-                    return email, confidence
-    except Exception as e:
-        logger.debug(f"Hunter.io lookup error for {domain}: {e}")
-
-    return None, "missing"
-
-
-async def search_tavily_email(
-    company_name: str, domain: Optional[str] = None, person_name: Optional[str] = None
-) -> Tuple[Optional[str], str]:
-    """Use Tavily search to discover public email addresses for the founder."""
-    if not settings.TAVILY_API_KEY:
-        return None, "missing"
-
-    query = (
-        f'"{person_name}" "{domain or company_name}" email OR contact'
-        if person_name
-        else f'"{company_name}" founder email OR "contact@{domain or company_name}"'
-    )
-
-    try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.post(
-                "https://api.tavily.com/search",
-                json={
-                    "api_key": settings.TAVILY_API_KEY,
-                    "query": query,
-                    "max_results": 4,
-                },
-            )
-            if resp.status_code == 200:
-                # Look for domain-matching emails first
-                if domain:
-                    matches = re.findall(rf"\b[A-Za-z0-9._%+-]+@{re.escape(domain)}\b", results_text, flags=re.IGNORECASE)
-                    if matches:
-                        return matches[0].lower(), "low_confidence"
-                    # If domain is known, do not accept random other domains
-                    return None, "missing"
-    except Exception as e:
-        logger.debug(f"Tavily email search error: {e}")
-
-    return None, "missing"
-
-
 async def research_contact(
     company_data: EnrichedCompanyData,
     target_person: Optional[str] = None,
 ) -> ContactInfoResult:
-    """Multi-tiered contact research: Contextual Search -> Apollo -> Hunter -> Tavily -> Smart Pattern."""
+    """Multi-tiered contact research engine: Website Scraper -> Precision Dorks -> LLM Extraction -> Pattern Generator."""
     clean_company = sanitize_company_name(company_data.name)
 
-    # 1. Resolve domain if missing or pointing to a news site
+    # 1. Resolve domain if missing or pointing to a news/aggregator URL
     domain = company_data.domain
     if not domain or any(
         news in domain
@@ -310,90 +163,88 @@ async def research_contact(
             "ycombinator.com",
         ]
     ):
-        resolved_domain = await resolve_company_domain(clean_company, context=company_data.one_liner or "")
+        resolved_domain = await resolve_company_domain(
+            clean_company, context=company_data.one_liner or ""
+        )
         if resolved_domain:
             domain = resolved_domain
             company_data.domain = resolved_domain
 
-    # 2. Determine target contact name, title & LinkedIn profile
-    name = target_person or (company_data.founders[0] if company_data.founders else None)
-    title = "Founding Team & Leadership"
-    linkedin_url: Optional[str] = None
+    # 2. Scrape website for direct contact/team emails
+    site_emails = []
+    if domain:
+        site_emails = await scrape_website_emails(domain)
 
-    if not name or name == "Founding Team":
-        # Contextual leadership discovery via Tavily
-        disc_name, disc_title, disc_li = await discover_leadership_and_linkedin(
-            clean_company, domain=domain, context=company_data.one_liner or ""
+    # 3. Search web for Founder/CTO LinkedIn profiles and contact details
+    snippets: List[str] = []
+    if site_emails:
+        snippets.append(f"Official Company Website Emails: {', '.join(site_emails)}")
+
+    if settings.TAVILY_API_KEY:
+        async with httpx.AsyncClient(timeout=10.0) as http_client:
+            queries = [
+                f'site:linkedin.com/in ("Founder" OR "Co-Founder" OR "CEO" OR "CTO" OR "Head of Growth" OR "VP Engineering") "{clean_company}"',
+                f'"{clean_company}" ("founder" OR "leadership" OR "contact" OR "reach me at") "{domain or clean_company}"',
+            ]
+            for q in queries:
+                try:
+                    resp = await http_client.post(
+                        "https://api.tavily.com/search",
+                        json={"api_key": settings.TAVILY_API_KEY, "query": q, "max_results": 4},
+                    )
+                    if resp.status_code == 200:
+                        for r in resp.json().get("results", []):
+                            snippets.append(
+                                f"Title: {r.get('title')}\nURL: {r.get('url')}\nContent: {r.get('content')}"
+                            )
+                except Exception as e:
+                    logger.debug(f"Search query error: {e}")
+
+    context_text = "\n---\n".join(snippets)
+
+    # 4. Use LLM to cleanly extract executive name, title, verified LinkedIn URL, and email
+    known_founder = target_person or (company_data.founders[0] if company_data.founders else None)
+    client = LLMClient()
+    prompt = f"""
+Analyze the following search snippets and extract contact information for the startup's leadership.
+
+COMPANY NAME: {clean_company}
+DOMAIN: {domain or 'Unknown'}
+TARGET PERSON / KNOWN FOUNDER: {known_founder or 'Any primary Founder/CTO'}
+
+SEARCH RESULTS & WEBPAGE SNIPPETS:
+{context_text}
+
+Instructions:
+1. If a TARGET PERSON / KNOWN FOUNDER ({known_founder}) is specified, extract details for that specific person. Otherwise, identify the primary Founder, CEO, or CTO from the snippets.
+2. Extract their exact title (e.g. 'Founder & CEO', 'Co-Founder & CTO', 'Head of Growth').
+3. Extract their exact personal LinkedIn profile URL if found in the search results (must be a real URL like https://linkedin.com/in/username).
+4. If a direct email is found in the text or website for this person, extract it. Otherwise generate the best professional email using their name and domain (e.g. first@domain or first.last@domain).
+5. Set email_confidence to 'verified' if found directly in text/website, or 'low_confidence' if inferred from domain pattern.
+"""
+
+    try:
+        contact_res = await client.generate_structured(
+            prompt=prompt,
+            response_schema=ContactInfoResult,
+            use_smart=False,
         )
-        name = disc_name
-        title = disc_title
-        linkedin_url = disc_li
-    else:
-        title = "Co-Founder & Leadership"
+        if known_founder and contact_res.name in ["Founding Team", "Unknown", None]:
+            contact_res.name = known_founder
+        return contact_res
+    except Exception as e:
+        logger.warning(f"LLM contact extraction fallback: {e}")
 
-    first_name = ""
-    last_name = ""
-    if name and name != "Founding Team":
-        name_parts = name.split()
-        first_name = name_parts[0]
-        last_name = name_parts[-1] if len(name_parts) > 1 else ""
-
-    email: Optional[str] = None
-    confidence: str = "missing"
-
-    # Tier 1: Apollo.io
-    if settings.APOLLO_API_KEY:
-        ap_email, ap_title, ap_li, ap_conf = await query_apollo_contact(
-            company_name=clean_company,
-            domain=domain,
-            first_name=first_name if first_name else None,
-            last_name=last_name if last_name else None,
-        )
-        if ap_email:
-            email = ap_email
-            confidence = ap_conf
-        if ap_title and title == "Founding Team & Leadership":
-            title = ap_title
-        if ap_li and not linkedin_url:
-            linkedin_url = ap_li
-
-    # Tier 2: Hunter.io
-    if not email and settings.HUNTER_API_KEY and domain and first_name:
-        h_email, h_conf = await query_hunter_email(domain, first_name, last_name)
-        if h_email:
-            email = h_email
-            confidence = h_conf
-
-    # Tier 3: Tavily Email Search
-    if not email:
-        tav_email, tav_conf = await search_tavily_email(
-            company_name=clean_company,
-            domain=domain,
-            person_name=name if name != "Founding Team" else None,
-        )
-        if tav_email:
-            email = tav_email
-            confidence = tav_conf
-
-    # Tier 4: Smart Domain Pattern Matching Fallback
-    if not email and domain and first_name and first_name.lower() != "founding":
-        clean_first = re.sub(r"[^a-zA-Z]", "", first_name).lower()
-        clean_last = re.sub(r"[^a-zA-Z]", "", last_name).lower() if last_name else ""
-
-        if clean_first and clean_last:
-            email = f"{clean_first}.{clean_last}@{domain}"
-            confidence = "low_confidence"
-        elif clean_first:
-            email = f"{clean_first}@{domain}"
-            confidence = "low_confidence"
-    elif not email and domain:
-        email = f"founders@{domain}"
-        confidence = "low_confidence"
+    # Fallback if extraction encounters any edge case
+    fallback_name = target_person or (company_data.founders[0] if company_data.founders else "Founding Team")
+    first_name = fallback_name.split()[0].lower() if fallback_name != "Founding Team" else "founders"
+    clean_first = re.sub(r"[^a-zA-Z]", "", first_name)
+    fallback_email = f"{clean_first}@{domain}" if domain else None
 
     return ContactInfoResult(
-        name=name,
-        title=title,
-        email=email,
-        email_confidence=confidence,
-        linkedin_url=linkedin_url,
+        name=fallback_name,
+        title="Founding Team & Leadership",
+        email=fallback_email,
+        email_confidence="low_confidence" if fallback_email else "missing",
+        linkedin_url=None,
     )

@@ -47,10 +47,10 @@ class Settings(BaseSettings):
         default="https://api.groq.com/openai/v1", description="Groq Base URL"
     )
     GROQ_FAST_MODEL: str = Field(
-        default="llama-3.1-8b-instant", description="Groq fast model"
+        default="openai/gpt-oss-20b", description="Groq fast model"
     )
     GROQ_SMART_MODEL: str = Field(
-        default="llama-3.3-70b-versatile", description="Groq smart model"
+        default="openai/gpt-oss-120b", description="Groq smart model"
     )
 
     # Search & Enrichment APIs
