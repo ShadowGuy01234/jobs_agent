@@ -30,14 +30,17 @@ def temp_db():
     yield db_path
     gc.collect()
     try:
-        if db_path.exists():
-            db_path.unlink()
-        wal = db_path.with_suffix(".db-wal")
-        shm = db_path.with_suffix(".db-shm")
-        if wal.exists():
-            wal.unlink()
-        if shm.exists():
-            shm.unlink()
+        checkpoints_db = db_path.parent / f"{db_path.stem}_checkpoints.db"
+        for path in [
+            db_path,
+            db_path.with_suffix(".db-wal"),
+            db_path.with_suffix(".db-shm"),
+            checkpoints_db,
+            checkpoints_db.with_suffix(".db-wal"),
+            checkpoints_db.with_suffix(".db-shm"),
+        ]:
+            if path.exists():
+                path.unlink()
     except (PermissionError, OSError):
         pass
 
@@ -100,23 +103,31 @@ async def test_langgraph_pause_and_approve_resume(temp_db):
          patch("pipeline.graph.research_contact", AsyncMock(return_value=mock_contact)), \
          patch("pipeline.graph.draft_personalized_outreach", AsyncMock(return_value=mock_draft)):
 
-        orchestrator = PipelineOrchestrator(db_path=temp_db)
+        # Use two independent orchestrator instances (sharing the same on-disk checkpoint
+        # file via db_path) to mirror the real app: the scheduler process drafts and pauses
+        # the run, and a *separate* Telegram bot process instance resumes it later. This is
+        # exactly the scenario that broke with the old in-memory MemorySaver checkpointer.
+        orchestrator_a = PipelineOrchestrator(db_path=temp_db)
+        orchestrator_b = PipelineOrchestrator(db_path=temp_db)
 
         # 2. Process opportunity -> should pause at human gate
-        interrupt_payload = await orchestrator.process_opportunity(opp_id)
+        interrupt_payload = await orchestrator_a.process_opportunity(opp_id)
         assert interrupt_payload is not None
         assert interrupt_payload["opportunity_id"] == opp_id
         assert interrupt_payload["fit_score"] == 92
         assert interrupt_payload["contact_email"] == "michael@cursor.com"
         assert len(interrupt_payload["draft_body"]) > 0
 
-        # 3. Resume with 'approve' action
-        result = await orchestrator.resume_opportunity(
+        # 3. Resume with 'approve' action from the *other* orchestrator instance
+        result = await orchestrator_b.resume_opportunity(
             opportunity_id=opp_id,
             action="approve",
         )
         assert result is not None
         assert result.get("is_sent") is True
+
+        await orchestrator_a.close()
+        await orchestrator_b.close()
 
 
 @pytest.mark.asyncio
@@ -152,17 +163,21 @@ async def test_langgraph_reject_resume(temp_db):
          patch("pipeline.graph.research_contact", AsyncMock(return_value=mock_contact)), \
          patch("pipeline.graph.draft_personalized_outreach", AsyncMock(return_value=mock_draft)):
 
-        orchestrator = PipelineOrchestrator(db_path=temp_db)
+        orchestrator_a = PipelineOrchestrator(db_path=temp_db)
+        orchestrator_b = PipelineOrchestrator(db_path=temp_db)
 
         # 1. Process opportunity -> pause
-        interrupt_payload = await orchestrator.process_opportunity(opp_id)
+        interrupt_payload = await orchestrator_a.process_opportunity(opp_id)
         assert interrupt_payload is not None
 
-        # 2. Resume with 'reject'
-        result = await orchestrator.resume_opportunity(
+        # 2. Resume with 'reject' from a separate orchestrator instance
+        result = await orchestrator_b.resume_opportunity(
             opportunity_id=opp_id,
             action="reject",
         )
         assert result is not None
         assert result.get("decision") == "REJECTED"
+
+        await orchestrator_a.close()
+        await orchestrator_b.close()
 

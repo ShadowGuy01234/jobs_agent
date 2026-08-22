@@ -32,6 +32,10 @@ class ContactInfoResult(BaseModel):
     email_confidence: str = Field(default="missing", description="verified, low_confidence, or missing")
     linkedin_url: Optional[str] = Field(default=None, description="LinkedIn profile URL if found")
     twitter_url: Optional[str] = Field(default=None, description="Twitter / X profile URL if found")
+    pattern_used: Optional[str] = Field(
+        default=None,
+        description="Internal only - which guess pattern (e.g. 'first.last') produced `email`, if it was inferred rather than found verbatim. Leave null.",
+    )
 
 
 class OutreachDraftResult(BaseModel):

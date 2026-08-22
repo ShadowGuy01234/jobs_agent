@@ -84,6 +84,9 @@ async def lifespan(app: FastAPI):
     logger.info("Shutting down services...")
     if scheduler_instance:
         scheduler_instance.shutdown()
+        await scheduler_instance.orchestrator.close()
+    if bot_controller:
+        await bot_controller.orchestrator.close()
     if telegram_app:
         try:
             if hasattr(telegram_app, "updater") and telegram_app.updater and telegram_app.updater.running:

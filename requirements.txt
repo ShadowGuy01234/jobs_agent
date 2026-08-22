@@ -1,7 +1,12 @@
 # Core LangGraph & LangChain (compatible with OpenRouter via ChatOpenAI)
 langgraph>=0.2.20
+langgraph-checkpoint-sqlite>=2.0.0
+aiosqlite>=0.20.0
 langchain-core>=0.3.0
 langchain-openai>=0.2.0
+
+# Email/domain verification
+dnspython>=2.6.0
 
 # LLM Gateway & OpenAI compatibility
 openai>=1.40.0

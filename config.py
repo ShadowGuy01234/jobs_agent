@@ -83,6 +83,13 @@ class Settings(BaseSettings):
         default=True,
         description="If True, simulates email delivery without dispatching real emails",
     )
+    MAX_LIVE_SENDS_PER_DAY: int = Field(
+        default=20,
+        ge=1,
+        le=500,
+        description="Safety cap on real (non-dry-run) emails sent per day from a personal Gmail "
+        "account, to keep cold-outreach volume/pacing from tripping spam/rate-limit flags",
+    )
 
     # Oracle Cloud Anti-Idle Heartbeat
     ORACLE_HEARTBEAT_ENABLED: bool = Field(

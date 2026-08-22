@@ -21,8 +21,10 @@ from bot.card_renderer import render_follow_up_card, render_opportunity_card
 from config import settings
 from db.database import (
     get_db_connection,
+    get_pattern_used_for_contact,
     get_system_stats,
     log_audit,
+    record_pattern_success,
     update_contact_email,
     update_draft_body,
     update_follow_up_status,
@@ -411,13 +413,47 @@ class TelegramBotController:
         data = query.data or ""
         chat_id = str(update.effective_chat.id)
 
+        try:
+            await self._route_callback_query(query, data, chat_id)
+        except Exception as e:
+            # Never let a resume/DB/network error die silently - the old behavior here was to
+            # let exceptions propagate into python-telegram-bot's internal error logging, which
+            # meant an approval could fail with zero visible feedback in the chat.
+            logger.error(f"Callback query handling failed for data={data!r}: {e}", exc_info=True)
+            try:
+                await query.message.reply_text(
+                    f"⚠️ <b>Action failed:</b> {e}", parse_mode=ParseMode.HTML
+                )
+            except Exception:
+                logger.error("Additionally failed to notify user of the callback error.", exc_info=True)
+
+    async def _route_callback_query(self, query, data: str, chat_id: str) -> None:
+        """Dispatch a single callback query action. Raised exceptions are caught by the caller."""
         # 1. Opportunity Actions
         if data.startswith("approve_"):
             opp_id = int(data.replace("approve_", ""))
             await query.edit_message_reply_markup(reply_markup=None)
             await query.message.reply_text("⏳ Resuming thread & dispatching email...")
 
-            result = await self.orchestrator.resume_opportunity(opp_id, action="approve")
+            # Pass the current (possibly user-edited) draft text explicitly. The paused graph's
+            # checkpointed state only holds the original AI-drafted subject/body - without this,
+            # editing a draft via "Edit Draft" then tapping Approve would silently send the
+            # original AI draft instead of the edited text, since node_human_gate only applies
+            # edited_subject/edited_body from THIS resume payload, not from the drafts table.
+            edited_subject, edited_body = None, None
+            with get_db_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "SELECT subject, body FROM outreach_drafts WHERE opportunity_id = ? ORDER BY id DESC LIMIT 1",
+                    (opp_id,),
+                )
+                draft_row = cursor.fetchone()
+                if draft_row:
+                    edited_subject, edited_body = draft_row["subject"], draft_row["body"]
+
+            result = await self.orchestrator.resume_opportunity(
+                opp_id, action="approve", edited_subject=edited_subject, edited_body=edited_body
+            )
             if result.get("is_sent"):
                 await query.message.reply_text(f"✅ <b>Approved & Sent!</b> (Opp #{opp_id})", parse_mode=ParseMode.HTML)
             else:
@@ -465,6 +501,19 @@ class TelegramBotController:
         elif data.startswith("fu_replied_"):
             sent_id = int(data.replace("fu_replied_", ""))
             update_follow_up_status(sent_id, status="replied", notes="Confirmed via Telegram")
+
+            # Feed this positive outcome back into pattern learning: if the email that got a
+            # reply was a guessed pattern (e.g. 'first.last'), that pattern gets ranked higher
+            # for future guesses at other companies.
+            with get_db_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("SELECT contact_id FROM sent_history WHERE id = ?", (sent_id,))
+                row = cursor.fetchone()
+            if row and row["contact_id"]:
+                pattern = get_pattern_used_for_contact(row["contact_id"])
+                if pattern:
+                    record_pattern_success(pattern)
+
             await query.edit_message_reply_markup(reply_markup=None)
             await query.message.reply_text("🎉 Fantastic! Thread marked as <b>Replied / In Conversation</b>.", parse_mode=ParseMode.HTML)
 

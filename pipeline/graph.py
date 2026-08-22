@@ -8,6 +8,8 @@ from langgraph.types import interrupt
 
 from config import settings
 from db.database import (
+    get_pattern_success_rates,
+    record_pattern_attempt,
     save_draft,
     save_evaluation,
     save_or_update_contact,
@@ -131,7 +133,13 @@ async def node_research(state: OpportunityPipelineState) -> Dict[str, Any]:
         is_stealth=state.is_stealth,
     )
 
-    contact_res: ContactInfoResult = await research_contact(company_data)
+    pattern_success_rates = get_pattern_success_rates(db_path=db_path)
+    contact_res: ContactInfoResult = await research_contact(
+        company_data, pattern_success_rates=pattern_success_rates
+    )
+
+    if contact_res.pattern_used:
+        record_pattern_attempt(contact_res.pattern_used, db_path=db_path)
 
     # Persist contact to SQLite
     contact_id = save_or_update_contact(
@@ -142,6 +150,7 @@ async def node_research(state: OpportunityPipelineState) -> Dict[str, Any]:
         email_confidence=contact_res.email_confidence,
         linkedin_url=contact_res.linkedin_url,
         twitter_url=contact_res.twitter_url,
+        pattern_used=contact_res.pattern_used,
         db_path=db_path,
     )
 

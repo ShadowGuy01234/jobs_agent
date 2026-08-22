@@ -41,6 +41,7 @@ CREATE TABLE IF NOT EXISTS contacts (
     title TEXT,
     email TEXT,
     email_confidence TEXT DEFAULT 'missing', -- 'verified', 'low_confidence', 'missing', 'manual'
+    pattern_used TEXT, -- which guess pattern produced `email` when it was inferred, e.g. 'first.last'
     linkedin_url TEXT,
     twitter_url TEXT,
     source TEXT,
@@ -85,6 +86,16 @@ CREATE TABLE IF NOT EXISTS sent_history (
     follow_up_status TEXT DEFAULT 'pending_check', -- 'pending_check', 'replied', 'bump_drafted', 'bump_sent', 'closed'
     last_follow_up_check TIMESTAMP,
     notes TEXT
+);
+
+-- Tracks which email-address guess pattern (e.g. 'first', 'first.last') tends to land real,
+-- responded-to inboxes for this user's outreach, so the pattern-guessing fallback in contact
+-- research can prefer historically successful patterns instead of guessing blind every time.
+CREATE TABLE IF NOT EXISTS email_pattern_stats (
+    pattern_type TEXT PRIMARY KEY,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    positive_signals INTEGER NOT NULL DEFAULT 0,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS audit_log (

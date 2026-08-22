@@ -40,6 +40,28 @@ def init_db(db_path: Optional[Path] = None) -> None:
     with get_db_connection(db_path) as conn:
         conn.executescript(schema_sql)
         conn.commit()
+    _run_migrations(db_path)
+
+
+def _run_migrations(db_path: Optional[Path] = None) -> None:
+    """Apply small additive schema migrations to databases created before a column/table existed.
+
+    `CREATE TABLE IF NOT EXISTS` in schema.sql only adds brand-new tables to an existing DB - it
+    can't add a new column to a table that already exists. Each statement here is idempotent
+    (guarded by catching the "duplicate column" error SQLite raises on a repeat run).
+    """
+    with get_db_connection(db_path) as conn:
+        cursor = conn.cursor()
+        migrations = [
+            "ALTER TABLE contacts ADD COLUMN pattern_used TEXT",
+        ]
+        for stmt in migrations:
+            try:
+                cursor.execute(stmt)
+                conn.commit()
+            except sqlite3.OperationalError as e:
+                if "duplicate column" not in str(e).lower():
+                    raise
 
 
 # ==============================================================================
@@ -198,6 +220,7 @@ def save_or_update_contact(
     linkedin_url: Optional[str] = None,
     twitter_url: Optional[str] = None,
     source: str = "enrichment",
+    pattern_used: Optional[str] = None,
     db_path: Optional[Path] = None,
 ) -> int:
     """Save or update contact details."""
@@ -223,6 +246,7 @@ def save_or_update_contact(
                     email_confidence = CASE WHEN ? != 'missing' THEN ? ELSE email_confidence END,
                     linkedin_url = COALESCE(?, linkedin_url),
                     twitter_url = COALESCE(?, twitter_url),
+                    pattern_used = COALESCE(?, pattern_used),
                     updated_at = CURRENT_TIMESTAMP
                 WHERE id = ?
                 """,
@@ -233,6 +257,7 @@ def save_or_update_contact(
                     email_confidence,
                     linkedin_url,
                     twitter_url,
+                    pattern_used,
                     contact_id,
                 ),
             )
@@ -242,8 +267,8 @@ def save_or_update_contact(
         # Insert new contact
         cursor.execute(
             """
-            INSERT INTO contacts (company_id, name, title, email, email_confidence, linkedin_url, twitter_url, source)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO contacts (company_id, name, title, email, email_confidence, linkedin_url, twitter_url, source, pattern_used)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 company_id,
@@ -254,6 +279,7 @@ def save_or_update_contact(
                 linkedin_url,
                 twitter_url,
                 source,
+                pattern_used,
             ),
         )
         conn.commit()
@@ -278,6 +304,69 @@ def update_contact_email(
             (email.lower().strip(), confidence, contact_id),
         )
         conn.commit()
+
+
+# ==============================================================================
+# 📈 EMAIL PATTERN LEARNING (which guess format actually reaches real inboxes)
+# ==============================================================================
+
+
+def record_pattern_attempt(pattern_type: str, db_path: Optional[Path] = None) -> None:
+    """Record that a guessed email of this pattern type was sent, for later success-rate ranking."""
+    with get_db_connection(db_path) as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            INSERT INTO email_pattern_stats (pattern_type, attempts, positive_signals)
+            VALUES (?, 1, 0)
+            ON CONFLICT(pattern_type) DO UPDATE SET
+                attempts = attempts + 1,
+                updated_at = CURRENT_TIMESTAMP
+            """,
+            (pattern_type,),
+        )
+        conn.commit()
+
+
+def record_pattern_success(pattern_type: str, db_path: Optional[Path] = None) -> None:
+    """Record a positive signal (e.g. a reply) for a guessed email of this pattern type."""
+    if not pattern_type:
+        return
+    with get_db_connection(db_path) as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            INSERT INTO email_pattern_stats (pattern_type, attempts, positive_signals)
+            VALUES (?, 1, 1)
+            ON CONFLICT(pattern_type) DO UPDATE SET
+                positive_signals = positive_signals + 1,
+                updated_at = CURRENT_TIMESTAMP
+            """,
+            (pattern_type,),
+        )
+        conn.commit()
+
+
+def get_pattern_success_rates(db_path: Optional[Path] = None) -> Dict[str, float]:
+    """Return {pattern_type: success_rate} using a small Laplace smoothing prior so
+    under-tried patterns aren't unfairly ranked at 0.0 forever."""
+    with get_db_connection(db_path) as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT pattern_type, attempts, positive_signals FROM email_pattern_stats")
+        rows = cursor.fetchall()
+        return {
+            row["pattern_type"]: (row["positive_signals"] + 1) / (row["attempts"] + 2)
+            for row in rows
+        }
+
+
+def get_pattern_used_for_contact(contact_id: int, db_path: Optional[Path] = None) -> Optional[str]:
+    """Look up which guess pattern (if any) was used to derive a contact's current email."""
+    with get_db_connection(db_path) as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT pattern_used FROM contacts WHERE id = ?", (contact_id,))
+        row = cursor.fetchone()
+        return row["pattern_used"] if row else None
 
 
 # ==============================================================================
@@ -415,6 +504,21 @@ def record_sent_email(
 
         conn.commit()
         return sent_id
+
+
+def count_live_sends_today(db_path: Optional[Path] = None) -> int:
+    """Count real (non-dry-run) emails already sent today, for daily pacing safety caps."""
+    today_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
+    with get_db_connection(db_path) as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT COUNT(*) FROM sent_history
+            WHERE sent_at >= ? AND (notes IS NULL OR notes NOT LIKE '%Dry Run%')
+            """,
+            (today_start,),
+        )
+        return cursor.fetchone()[0]
 
 
 def get_pending_follow_ups(

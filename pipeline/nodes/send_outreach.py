@@ -7,7 +7,7 @@ import smtplib
 from typing import Optional
 
 from config import settings
-from db.database import log_audit, record_sent_email, update_opportunity_status
+from db.database import count_live_sends_today, log_audit, record_sent_email, update_opportunity_status
 from pipeline.state import OpportunityPipelineState
 
 logger = logging.getLogger(__name__)
@@ -88,6 +88,15 @@ async def execute_outreach_send(state: OpportunityPipelineState) -> OpportunityP
             db_path=db_path,
         )
     else:
+        sent_today = count_live_sends_today(db_path=db_path)
+        if sent_today >= settings.MAX_LIVE_SENDS_PER_DAY:
+            state.error_message = (
+                f"Daily live-send cap reached ({sent_today}/{settings.MAX_LIVE_SENDS_PER_DAY}). "
+                "Refusing to send more from this Gmail account today to protect deliverability. "
+                "Raise MAX_LIVE_SENDS_PER_DAY in .env if you're confident, or wait until tomorrow."
+            )
+            logger.warning(state.error_message)
+            return state
         try:
             send_email_via_smtp(
                 to_email=recipient,
