@@ -16,6 +16,8 @@ class DiscoverySource(str, Enum):
     SEC_EDGAR = "sec_edgar"
     VC_STEALTH = "vc_stealth"
     TAVILY_STEALTH = "tavily_stealth"
+    HN_HIRING = "hn_hiring"
+    REMOTE_BOARDS = "remote_boards"
     WATCHLIST = "watchlist"
     MANUAL = "manual"
 

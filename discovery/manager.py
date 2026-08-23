@@ -14,8 +14,10 @@ from db.database import (
     save_opportunity,
 )
 from discovery.base import BaseDiscoveryConnector
+from discovery.board_tokens import merge_board_tokens
 from discovery.company_launch import (
     HackerNewsConnector,
+    HNHiringConnector,
     IndianStartupsConnector,
     ProductHuntConnector,
     SecEdgarConnector,
@@ -23,9 +25,17 @@ from discovery.company_launch import (
     VCStealthConnector,
     YCDirectoryConnector,
 )
-from discovery.job_boards import AshbyConnector, GreenhouseConnector, LeverConnector
+from discovery.job_boards import (
+    AshbyConnector,
+    GreenhouseConnector,
+    LeverConnector,
+    RemoteBoardsConnector,
+)
 from discovery.models import DiscoverySource, RawOpportunity
 from discovery.watchlist import WatchlistConnector
+from pipeline.nodes.score_fit import check_title_relevance
+from profile.models import DiscoveryTargets
+from profile.parser import load_user_profile
 
 logger = logging.getLogger(__name__)
 
@@ -35,20 +45,31 @@ class DiscoveryManager:
 
     def __init__(self, db_path: Optional[Path] = None):
         self.db_path = db_path or settings.DATABASE_PATH
+
+        # Target lists come from user_profile.yaml so retargeting needs no code edit.
+        # An empty list means "use the connector's own defaults", so `or None` is load-bearing.
+        try:
+            targets = load_user_profile().discovery
+        except Exception as e:
+            logger.warning(f"Could not load discovery targets from profile ({e}); using connector defaults.")
+            targets = DiscoveryTargets()
+
         self.connectors: Dict[str, BaseDiscoveryConnector] = {
             # Track A: Job Boards
-            "ashby": AshbyConnector(),
-            "greenhouse": GreenhouseConnector(),
-            "lever": LeverConnector(),
+            "ashby": AshbyConnector(target_boards=merge_board_tokens("ashby", targets.ashby_boards)),
+            "greenhouse": GreenhouseConnector(target_boards=merge_board_tokens("greenhouse", targets.greenhouse_boards)),
+            "lever": LeverConnector(target_companies=merge_board_tokens("lever", targets.lever_boards)),
+            "remote_boards": RemoteBoardsConnector(),
             # Track B: Launches, Stealth & Feeds
-            "yc": YCDirectoryConnector(),
+            "yc": YCDirectoryConnector(batches=targets.yc_batches or None),
             "producthunt": ProductHuntConnector(),
-            "hackernews": HackerNewsConnector(),
-            "india": IndianStartupsConnector(),
+            "hackernews": HackerNewsConnector(queries=targets.hn_queries or None),
+            "hn_hiring": HNHiringConnector(),
+            "india": IndianStartupsConnector(rss_feeds=targets.india_rss or None),
             "sec_edgar": SecEdgarConnector(),
-            "vc_stealth": VCStealthConnector(),
+            "vc_stealth": VCStealthConnector(rss_feeds=targets.vc_rss or None),
             "tavily_stealth": TavilyStealthConnector(),
-            "watchlist": WatchlistConnector(),
+            "watchlist": WatchlistConnector(target_startups=targets.watchlist or None),
         }
 
     async def run_connector(
@@ -57,8 +78,11 @@ class DiscoveryManager:
         """Run a single discovery connector by name."""
         connector = self.connectors.get(name.lower())
         if not connector:
-            logger.warning(f"Connector '{name}' not found. Available: {list(self.connectors.keys())}")
-            return []
+            # Raise rather than return []: a silent empty result let a misspelled source name
+            # ("tavily" vs "tavily_stealth") sit undetected in the hourly rotation indefinitely.
+            raise ValueError(
+                f"Unknown discovery source '{name}'. Available: {sorted(self.connectors)}"
+            )
 
         logger.info(f"Running discovery connector: {name}")
         try:
@@ -73,7 +97,18 @@ class DiscoveryManager:
         """Deduplicate and store raw opportunities into SQLite. Returns new opportunity IDs."""
         new_opp_ids: List[int] = []
 
+        skipped_titles = 0
+
         for item in raw_items:
+            # 0. Drop non-engineering job titles before they reach SQLite at all. Guarding here
+            # rather than in each connector covers every source at once, and keeps irrelevant
+            # rows from occupying the hourly sweep's limited unscored-backlog slots.
+            title_reason = check_title_relevance(item.title, item.type.value)
+            if title_reason:
+                logger.debug(f"Skipping irrelevant opportunity: {title_reason}")
+                skipped_titles += 1
+                continue
+
             # 1. Check if opportunity URL already exists
             if opportunity_exists(item.url, self.db_path):
                 logger.debug(f"Skipping existing opportunity URL: {item.url}")
@@ -117,9 +152,13 @@ class DiscoveryManager:
                 new_opp_ids.append(opp_id)
                 logger.info(f"Ingested new opportunity [{opp_id}]: {item.title} ({item.company.name})")
 
+        if skipped_titles:
+            logger.info(f"Filtered {skipped_titles} non-engineering title(s) before ingest.")
+
         log_audit(
             event_type="discovery_ingest",
-            message=f"Ingested {len(new_opp_ids)} new opportunities from batch of {len(raw_items)}",
+            message=f"Ingested {len(new_opp_ids)} new opportunities from batch of {len(raw_items)} "
+                    f"({skipped_titles} filtered on title)",
             payload={"new_opportunity_ids": new_opp_ids},
             db_path=self.db_path,
         )

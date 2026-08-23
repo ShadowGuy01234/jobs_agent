@@ -6,6 +6,7 @@ import httpx
 
 from discovery.base import BaseDiscoveryConnector
 from discovery.models import CompanyInfo, DiscoverySource, OpportunityType, RawOpportunity
+from pipeline.nodes.score_fit import check_title_relevance
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +47,9 @@ class LeverConnector(BaseDiscoveryConnector):
 
                 for post in postings:
                     title = post.get("text", "")
+                    # Skip non-engineering roles here so `limit` counts relevant jobs.
+                    if check_title_relevance(title, OpportunityType.JOB_POSTING.value):
+                        continue
                     job_url = post.get("hostedUrl", "")
                     categories = post.get("categories", {})
                     location = categories.get("location", "Remote")

@@ -197,6 +197,8 @@ async def node_draft(state: OpportunityPipelineState) -> Dict[str, Any]:
         fit_eval=fit_eval,
         contact_info=contact_info,
         opportunity_type=state.opportunity_type,
+        opportunity_title=state.opportunity_title,
+        raw_content=state.raw_content,
     )
 
     # Persist draft to SQLite

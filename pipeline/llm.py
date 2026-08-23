@@ -168,7 +168,9 @@ class LLMClient:
                     model=settings.OPENROUTER_SMART_MODEL if use_smart else settings.OPENROUTER_FAST_MODEL,
                     api_key=settings.OPENROUTER_API_KEY,
                     base_url=settings.OPENROUTER_BASE_URL,
-                    temperature=0.2,
+                    # Mirror the primary call's temperature; hardcoding 0.2 here silently
+                    # redrafted rate-limited retries at a different setting than the first try.
+                    temperature=llm.temperature,
                     default_headers=fallback_headers,
                 )
                 response = await fallback_client.ainvoke(messages)

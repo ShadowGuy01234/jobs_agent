@@ -7,6 +7,7 @@ from bs4 import BeautifulSoup
 
 from discovery.base import BaseDiscoveryConnector
 from discovery.models import CompanyInfo, DiscoverySource, OpportunityType, RawOpportunity
+from pipeline.nodes.score_fit import check_title_relevance
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +52,10 @@ class GreenhouseConnector(BaseDiscoveryConnector):
 
                 for job in jobs:
                     title = job.get("title", "")
+                    # Skip non-engineering roles here so `limit` counts relevant jobs. A big
+                    # board's sales openings would otherwise fill the whole per-sweep quota.
+                    if check_title_relevance(title, OpportunityType.JOB_POSTING.value):
+                        continue
                     job_url = job.get("absolute_url", "")
                     location_obj = job.get("location", {})
                     location_name = location_obj.get("name", "Remote") if isinstance(location_obj, dict) else str(location_obj)

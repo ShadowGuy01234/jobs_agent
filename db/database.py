@@ -521,6 +521,22 @@ def count_live_sends_today(db_path: Optional[Path] = None) -> int:
         return cursor.fetchone()[0]
 
 
+def count_alert_cards_today(db_path: Optional[Path] = None) -> int:
+    """Count Telegram opportunity cards already pushed today.
+
+    MAX_ALERTS_PER_DAY was previously applied as a per-run slice, so 24 hourly sweeps could
+    emit 24x the documented limit. Counting audit rows makes it an actual daily ceiling.
+    """
+    today_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
+    with get_db_connection(db_path) as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT COUNT(*) FROM audit_log WHERE event_type = 'alert_card_sent' AND created_at >= ?",
+            (today_start,),
+        )
+        return cursor.fetchone()[0]
+
+
 def get_pending_follow_ups(
     min_days: int = 5, max_days: int = 14, db_path: Optional[Path] = None
 ) -> List[Dict[str, Any]]:

@@ -20,23 +20,28 @@ from backup import create_database_backup
 from bot.card_renderer import render_follow_up_card, render_opportunity_card
 from config import settings
 from db.database import (
+    count_alert_cards_today,
     get_opportunity_evaluation_summary,
     get_pending_follow_ups,
     get_unscored_opportunity_ids,
+    log_audit,
 )
+from discovery.board_tokens import expand_board_tokens
 from discovery.manager import DiscoveryManager
 from heartbeat import run_anti_idle_pulse
 from pipeline.orchestrator import PipelineOrchestrator
 
 logger = logging.getLogger(__name__)
 
-# Complete list of 11 discovery connectors to rotate through
+# Complete list of discovery connectors to rotate through
 ROTATING_SOURCES: List[str] = [
     "yc",
+    "hn_hiring",
+    "remote_boards",
     "hackernews",
     "india",
     "producthunt",
-    "tavily",
+    "tavily_stealth",
     "ashby",
     "greenhouse",
     "lever",
@@ -90,6 +95,7 @@ class OutreachScheduler:
             alerts_sent = 0
             evaluated_count = len(limit_to_process)
             high_fit_companies: List[str] = []
+            passing: List[tuple] = []
 
             # 3. Process opportunities through LangGraph pipeline
             for i, opp_id in enumerate(limit_to_process):
@@ -101,27 +107,43 @@ class OutreachScheduler:
                     fit_score = interrupt_payload.get("fit_score", 0) if interrupt_payload else 0
 
                     if interrupt_payload and fit_score >= settings.MIN_FIT_SCORE:
-                        company_name = interrupt_payload.get("company_name", "Opportunity")
-                        high_fit_companies.append(f"<b>{html.escape(company_name)}</b> ({fit_score}/100)")
-                        alerts_sent += 1
-
-                        if self.bot_app and settings.TELEGRAM_CHAT_ID:
-                            text, keyboard = render_opportunity_card(interrupt_payload)
-                            await self.bot_app.bot.send_message(
-                                chat_id=settings.TELEGRAM_CHAT_ID,
-                                text=text,
-                                reply_markup=keyboard,
-                                parse_mode="HTML",
-                            )
+                        passing.append((fit_score, interrupt_payload))
                 except Exception as e:
                     logger.error(f"Error processing opp #{opp_id} during hourly sweep: {e}", exc_info=True)
 
-            # 4. Send hourly report back to Telegram
+            # 4. Send cards best-first, respecting the real daily alert ceiling
+            remaining = max(0, settings.MAX_ALERTS_PER_DAY - count_alert_cards_today())
+            if passing and not remaining:
+                logger.info(
+                    f"Daily alert cap reached ({settings.MAX_ALERTS_PER_DAY}); "
+                    f"holding {len(passing)} high-fit card(s) until tomorrow."
+                )
+
+            for fit_score, payload in sorted(passing, key=lambda p: p[0], reverse=True)[:remaining]:
+                company_name = payload.get("company_name", "Opportunity")
+                high_fit_companies.append(f"<b>{html.escape(company_name)}</b> ({fit_score}/100)")
+                alerts_sent += 1
+
+                if self.bot_app and settings.TELEGRAM_CHAT_ID:
+                    text, keyboard = render_opportunity_card(payload)
+                    await self.bot_app.bot.send_message(
+                        chat_id=settings.TELEGRAM_CHAT_ID,
+                        text=text,
+                        reply_markup=keyboard,
+                        parse_mode="HTML",
+                    )
+                log_audit(
+                    event_type="alert_card_sent",
+                    message=f"Opportunity card sent for {company_name} ({fit_score}/100)",
+                    payload={"opportunity_id": payload.get("opportunity_id"), "fit_score": fit_score},
+                )
+
+            # 5. Send hourly report back to Telegram
             if self.bot_app and settings.TELEGRAM_CHAT_ID:
                 matches_str = (
                     f"• <b>🎯 High-Fit Matches Sent ({alerts_sent}):</b>\n  " + "\n  ".join(high_fit_companies)
                     if high_fit_companies
-                    else "• <b>🎯 High-Fit Matches Sent:</b> 0 (Threshold: 70/100)"
+                    else f"• <b>🎯 High-Fit Matches Sent:</b> 0 (Threshold: {settings.MIN_FIT_SCORE}/100)"
                 )
 
                 hourly_report_msg = (
@@ -172,6 +194,28 @@ class OutreachScheduler:
         except Exception as e:
             logger.error(f"Error during follow-up check: {e}", exc_info=True)
 
+    async def run_board_token_expansion(self) -> None:
+        """Weekly: grow the Greenhouse/Lever/Ashby slug cache from recent YC companies.
+
+        Low-frequency on purpose - this probes a few hundred URLs, so it must never sit on the
+        hourly discovery path.
+        """
+        logger.info("Executing weekly job-board token expansion...")
+        try:
+            found = await expand_board_tokens()
+            added = sum(len(v) for v in found.values())
+            logger.info(f"Board token expansion added {added} new live board(s).")
+
+            if added and self.bot_app and settings.TELEGRAM_CHAT_ID:
+                detail = ", ".join(f"<code>{p}</code> +{len(t)}" for p, t in found.items() if t)
+                await self.bot_app.bot.send_message(
+                    chat_id=settings.TELEGRAM_CHAT_ID,
+                    text=f"📡 <b>Discovery expanded:</b> {added} new job board(s) found — {detail}",
+                    parse_mode="HTML",
+                )
+        except Exception as e:
+            logger.error(f"Error during board token expansion: {e}", exc_info=True)
+
     def run_anti_idle_heartbeat_sync(self) -> None:
         """Trigger synchronous anti-idle pulse in worker thread."""
         run_anti_idle_pulse(duration_seconds=30)
@@ -203,7 +247,15 @@ class OutreachScheduler:
                 replace_existing=True,
             )
 
-        # 4. Daily Database Backup (Runs at 03:00 AM)
+        # 4. Weekly Job-Board Token Expansion (Sunday 04:00 AM)
+        self.scheduler.add_job(
+            self.run_board_token_expansion,
+            trigger=CronTrigger(day_of_week="sun", hour=4, minute=0),
+            id="board_token_job",
+            replace_existing=True,
+        )
+
+        # 5. Daily Database Backup (Runs at 03:00 AM)
         self.scheduler.add_job(
             create_database_backup,
             trigger=CronTrigger(hour=3, minute=0),

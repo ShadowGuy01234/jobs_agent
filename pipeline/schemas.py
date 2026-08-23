@@ -40,6 +40,6 @@ class ContactInfoResult(BaseModel):
 
 class OutreachDraftResult(BaseModel):
     subject: str = Field(description="Direct, high-converting cold email subject line")
-    body: str = Field(description="Personalized email body under 120 words following style rules")
+    body: str = Field(description="Personalized email body within the word limit given in the prompt, following the supplied style rules")
     personalization_hook: str = Field(description="Specific milestone or technical detail referenced")
     word_count: int = Field(description="Word count of email body")

@@ -99,6 +99,144 @@ class TelegramBotController:
                 disable_web_page_preview=True,
             )
 
+    async def _draft_follow_up_bump(self, sent_id: int, query: Any) -> None:
+        """Draft a follow-up bump for an already-sent email and offer it for approval.
+
+        The "No Reply - Draft Bump" button was previously a no-op stub, so the whole follow-up
+        path dead-ended. Drafting (not auto-sending) matches the button's label and keeps every
+        outbound email behind an explicit human tap, like the initial-outreach flow.
+        """
+        from db.database import save_draft
+        from pipeline.nodes.draft_outreach import draft_personalized_outreach
+        from pipeline.schemas import ContactInfoResult, EnrichedCompanyData, FitEvaluationResult
+
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT s.*, c.name AS company_name, c.domain AS company_domain,
+                       ct.name AS contact_name, ct.title AS contact_title
+                FROM sent_history s
+                JOIN opportunities o ON s.opportunity_id = o.id
+                JOIN companies c ON o.company_id = c.id
+                LEFT JOIN contacts ct ON s.contact_id = ct.id
+                WHERE s.id = ?
+                """,
+                (sent_id,),
+            )
+            row = cursor.fetchone()
+
+        if not row:
+            await query.message.reply_text(f"⚠️ Could not find sent email #{sent_id}.")
+            return
+
+        item = dict(row)
+        try:
+            draft = await draft_personalized_outreach(
+                company_data=EnrichedCompanyData(
+                    name=item.get("company_name") or "your team",
+                    domain=item.get("company_domain"),
+                    one_liner="",
+                ),
+                fit_eval=FitEvaluationResult(
+                    fit_score=0, decision="PROCEED", summary_reasoning="", personalized_hook=""
+                ),
+                contact_info=ContactInfoResult(
+                    name=item.get("contact_name") or "Founding Team",
+                    title=item.get("contact_title") or "Leadership",
+                    email=item.get("recipient_email"),
+                ),
+                is_follow_up=True,
+                original_subject=item.get("subject"),
+            )
+        except Exception as e:
+            logger.error(f"Failed to draft follow-up bump for sent #{sent_id}: {e}", exc_info=True)
+            await query.message.reply_text(f"⚠️ Could not draft the bump: {html.escape(str(e))}")
+            return
+
+        draft_id = save_draft(
+            opportunity_id=item["opportunity_id"],
+            contact_id=item.get("contact_id"),
+            subject=draft.subject,
+            body=draft.body,
+            draft_type="follow_up",
+            status="pending",
+        )
+
+        await query.message.reply_text(
+            f"📬 <b>Follow-Up Bump Draft</b>\n"
+            f"To: <code>{html.escape(str(item.get('recipient_email')))}</code>\n"
+            f"────────────────────────────────\n"
+            f"<b>Subject:</b> {html.escape(draft.subject)}\n\n"
+            f"{html.escape(draft.body)}\n"
+            f"────────────────────────────────",
+            parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup(
+                [[InlineKeyboardButton("✅ Send Bump", callback_data=f"fu_send_{draft_id}")]]
+            ),
+        )
+
+    async def _send_follow_up_bump(self, draft_id: int, query: Any) -> None:
+        """Dispatch an approved follow-up bump, honouring DRY_RUN and the daily send cap."""
+        from db.database import count_live_sends_today, record_sent_email
+        from pipeline.nodes.send_outreach import send_email_via_smtp
+
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT d.*, ct.email AS contact_email
+                FROM outreach_drafts d
+                LEFT JOIN contacts ct ON d.contact_id = ct.id
+                WHERE d.id = ?
+                """,
+                (draft_id,),
+            )
+            row = cursor.fetchone()
+
+        if not row:
+            await query.message.reply_text(f"⚠️ Draft #{draft_id} not found.")
+            return
+
+        draft = dict(row)
+        recipient = draft.get("contact_email")
+        if not recipient:
+            await query.message.reply_text("⚠️ No recipient address on file for this thread.")
+            return
+
+        if settings.DRY_RUN:
+            logger.info(f"[DRY_RUN] Simulated follow-up bump to {recipient}: {draft['subject']}")
+        else:
+            sent_today = count_live_sends_today()
+            if sent_today >= settings.MAX_LIVE_SENDS_PER_DAY:
+                await query.message.reply_text(
+                    f"🛑 Daily live-send cap reached "
+                    f"({sent_today}/{settings.MAX_LIVE_SENDS_PER_DAY}). Try again tomorrow."
+                )
+                return
+            try:
+                send_email_via_smtp(
+                    to_email=recipient, subject=draft["subject"], body=draft["body"]
+                )
+            except Exception as e:
+                logger.error(f"Follow-up bump send failed: {e}", exc_info=True)
+                await query.message.reply_text(f"⚠️ Send failed: {html.escape(str(e))}")
+                return
+
+        record_sent_email(
+            opportunity_id=draft["opportunity_id"],
+            draft_id=draft_id,
+            contact_id=draft.get("contact_id"),
+            recipient_email=recipient,
+            subject=draft["subject"],
+            body=draft["body"],
+            notes="Follow-up bump (Dry Run)" if settings.DRY_RUN else "Follow-up bump",
+        )
+
+        tag = "🟡 Simulated (DRY_RUN)" if settings.DRY_RUN else "🟢 Sent"
+        await query.message.reply_text(f"{tag} follow-up bump to <code>{html.escape(recipient)}</code>.",
+                                       parse_mode=ParseMode.HTML)
+
     async def cmd_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle /start and /help commands."""
         if not self.is_authorized(update):
@@ -201,15 +339,15 @@ class TelegramBotController:
             "• <code>greenhouse</code> — Greenhouse public startup boards\n"
             "• <code>lever</code> — Lever public startup boards\n\n"
             "<b>Track B (Early Startups, Launches & Stealth):</b>\n"
-            "• <code>yc</code> — Y Combinator (W25, S24, W24, F24 batches)\n"
+            "• <code>yc</code> — Y Combinator (4 most recent batches)\n"
             "• <code>producthunt</code> — Product Hunt trending maker launches\n"
-            "• <code>hackernews</code> (or <code>hn</code>) — Hacker News Launch HN & Show HN\n"
+            "• <code>hackernews</code> — Hacker News Launch HN & Show HN\n"
             "• <code>india</code> — Indian startup funding news (Inc42, Entrackr, YourStory)\n"
             "• <code>sec_edgar</code> — SEC Form D stealth venture fundings\n"
             "• <code>vc_stealth</code> — VC portfolio & stealth announcements\n"
-            "• <code>tavily</code> — Live web search sweeps for stealth founders\n"
+            "• <code>tavily_stealth</code> — Live web search sweeps for stealth founders\n"
             "• <code>watchlist</code> — Hand-curated target startups\n"
-            "• <code>all</code> — Run all 11 discovery connectors concurrently\n\n"
+            "• <code>all</code> — Run every discovery connector concurrently\n\n"
             "<b>Usage Examples:</b>\n"
             "• <code>/discover yc</code>\n"
             "• <code>/discover india</code>\n"
@@ -265,9 +403,17 @@ class TelegramBotController:
                 if i > 0:
                     await asyncio.sleep(1.5)  # 1.5s delay to prevent provider rate limits
                 interrupt_payload = await self.orchestrator.process_opportunity(opp_id)
-                if interrupt_payload and interrupt_payload.get("fit_score", 0) >= settings.MIN_FIT_SCORE:
+                fit_score = interrupt_payload.get("fit_score", 0) if interrupt_payload else 0
+                if interrupt_payload and fit_score >= settings.MIN_FIT_SCORE:
                     matched_count += 1
                     await self._send_opportunity_card(update.effective_chat.id, interrupt_payload, context)
+                    # Counted so the hourly sweep's daily ceiling stays accurate. Manual
+                    # /discover is user-initiated, so it isn't blocked by the cap itself.
+                    log_audit(
+                        event_type="alert_card_sent",
+                        message=f"Opportunity card sent via /discover ({fit_score}/100)",
+                        payload={"opportunity_id": opp_id, "fit_score": fit_score},
+                    )
             except Exception as e:
                 logger.error(f"Error processing opp #{opp_id}: {e}", exc_info=True)
 
@@ -521,8 +667,12 @@ class TelegramBotController:
             sent_id = int(data.replace("fu_bump_", ""))
             await query.edit_message_reply_markup(reply_markup=None)
             await query.message.reply_text("📝 Generating 2-sentence follow-up bump...")
-            # Trigger follow-up bump drafting
-            # (handled by follow-up checker / draft generator)
+            await self._draft_follow_up_bump(sent_id, query)
+
+        elif data.startswith("fu_send_"):
+            draft_id = int(data.replace("fu_send_", ""))
+            await query.edit_message_reply_markup(reply_markup=None)
+            await self._send_follow_up_bump(draft_id, query)
 
         elif data.startswith("fu_snooze_"):
             sent_id = int(data.replace("fu_snooze_", ""))

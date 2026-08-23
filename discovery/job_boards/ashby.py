@@ -7,6 +7,7 @@ from bs4 import BeautifulSoup
 
 from discovery.base import BaseDiscoveryConnector
 from discovery.models import CompanyInfo, DiscoverySource, OpportunityType, RawOpportunity
+from pipeline.nodes.score_fit import check_title_relevance
 
 logger = logging.getLogger(__name__)
 
@@ -19,7 +20,7 @@ class AshbyConnector(BaseDiscoveryConnector):
         self.target_boards = target_boards or [
             "linear",
             "cursor",
-            "perplextiy",
+            "perplexity",
             "tavily",
             "replit",
             "cohere",
@@ -57,6 +58,9 @@ class AshbyConnector(BaseDiscoveryConnector):
                         continue
 
                     title = job.get("title", "")
+                    # Skip non-engineering roles here so `limit` counts relevant jobs.
+                    if check_title_relevance(title, OpportunityType.JOB_POSTING.value):
+                        continue
                     job_url = job.get("jobUrl", f"https://jobs.ashbyhq.com/{board_slug}/{job.get('id')}")
                     location = job.get("location", "Remote")
                     is_remote = job.get("isRemote", True) or "remote" in location.lower()

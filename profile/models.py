@@ -1,6 +1,6 @@
 """Pydantic schemas for candidate profile, targeting criteria, and resume data."""
 
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, Field
 
 
@@ -8,6 +8,11 @@ class WritingStyle(BaseModel):
     tone: str = "Concise, technical, direct, humble"
     max_words: int = 120
     anti_patterns: List[str] = Field(default_factory=list)
+    # Scheduling ask — all defaulted so an existing user_profile.yaml keeps loading unchanged.
+    timezone: str = "Asia/Kolkata"
+    timezone_label: str = "IST"
+    meeting_window: str = "7-9pm"
+    meeting_minutes: int = 15
 
 
 class CandidateInfo(BaseModel):
@@ -44,7 +49,25 @@ class TargetingCriteria(BaseModel):
     max_alerts_per_day: int = 10
 
 
+class DiscoveryTargets(BaseModel):
+    """Per-connector target lists, so retargeting never needs a code edit.
+
+    Every field defaults to empty; a connector receiving an empty list falls back to the
+    defaults baked into its own __init__, so an older user_profile.yaml still works.
+    """
+
+    greenhouse_boards: List[str] = Field(default_factory=list)
+    lever_boards: List[str] = Field(default_factory=list)
+    ashby_boards: List[str] = Field(default_factory=list)
+    yc_batches: List[str] = Field(default_factory=list)
+    hn_queries: List[str] = Field(default_factory=list)
+    india_rss: List[str] = Field(default_factory=list)
+    vc_rss: List[str] = Field(default_factory=list)
+    watchlist: List[Dict[str, Any]] = Field(default_factory=list)
+
+
 class UserProfile(BaseModel):
     candidate: CandidateInfo
     targeting: TargetingCriteria
+    discovery: DiscoveryTargets = Field(default_factory=DiscoveryTargets)
     resume_text: Optional[str] = None

@@ -4,6 +4,8 @@ import html
 from typing import Any, Dict, Optional
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
+from pipeline.timeslots import is_poor_send_window
+
 
 def render_opportunity_card(payload: Dict[str, Any]) -> tuple[str, InlineKeyboardMarkup]:
     """Format opportunity preview card and inline action buttons for Telegram."""
@@ -40,6 +42,12 @@ def render_opportunity_card(payload: Dict[str, Any]) -> tuple[str, InlineKeyboar
     else:
         email_str = "❌ <i>Email Missing (Provide below)</i>"
 
+    # Advisory only - sending stays instant and manual (data/template_outrach.md:188).
+    poor_window = is_poor_send_window()
+    send_window_hint = (
+        f"\n\n⏰ <i>Heads up: {html.escape(poor_window)}.</i>" if poor_window else ""
+    )
+
     linkedin_str = f"<a href='{linkedin}'>LinkedIn Profile</a>" if linkedin else "<i>Not found</i>"
     website_str = f"<a href='https://{domain}'>{domain}</a>" if domain else "<i>N/A</i>"
 
@@ -59,6 +67,7 @@ def render_opportunity_card(payload: Dict[str, Any]) -> tuple[str, InlineKeyboar
         f"<b>Subject:</b> {subject}\n\n"
         f"{body}\n"
         f"────────────────────────────────"
+        f"{send_window_hint}"
     )
 
     # Action buttons
