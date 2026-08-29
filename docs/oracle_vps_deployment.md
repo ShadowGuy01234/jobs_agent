@@ -95,11 +95,17 @@ Paste your production keys (replace with your active credentials):
 
 ```ini
 # ==============================================================================
-# 🤖 LLM GATEWAY PROVIDER (Toggle: 'groq' or 'openrouter')
+# 🤖 LLM GATEWAY PROVIDER (Toggle: 'tokenrouter', 'groq', or 'openrouter')
 # ==============================================================================
-LLM_PROVIDER=groq
+LLM_PROVIDER=tokenrouter
 
-# --- GROQ CONFIGURATION ---
+# --- TOKENROUTER CONFIGURATION (Main Model: GLM 5.3 Flash / Free) ---
+TOKENROUTER_API_KEY=your_tokenrouter_api_key_here
+TOKENROUTER_BASE_URL=https://api.tokenrouter.com/v1
+TOKENROUTER_FAST_MODEL=z-ai/glm-5.3-free
+TOKENROUTER_SMART_MODEL=z-ai/glm-5.3-free
+
+# --- GROQ CONFIGURATION (Optional fallback) ---
 GROQ_API_KEY=gsk_your_groq_api_key_here
 GROQ_BASE_URL=https://api.groq.com/openai/v1
 GROQ_FAST_MODEL=openai/gpt-oss-20b
@@ -108,8 +114,8 @@ GROQ_SMART_MODEL=openai/gpt-oss-120b
 # --- OPENROUTER CONFIGURATION (Optional fallback) ---
 OPENROUTER_API_KEY=sk-or-your-openrouter-key
 OPENROUTER_BASE_URL=https://openrouter.ai/api/v1
-OPENROUTER_FAST_MODEL=nvidia/nemotron-3-ultra-550b-a55b:free
-OPENROUTER_SMART_MODEL=nvidia/nemotron-3-ultra-550b-a55b:free
+OPENROUTER_FAST_MODEL=deepseek/deepseek-chat
+OPENROUTER_SMART_MODEL=deepseek/deepseek-chat
 
 # ==============================================================================
 # 🔍 SEARCH & CONTACT ENRICHMENT

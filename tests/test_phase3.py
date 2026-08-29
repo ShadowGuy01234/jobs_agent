@@ -154,3 +154,70 @@ def test_timeslots_are_future_business_days():
         got = next_business_days(datetime(2026, 8, day, 15, 0, tzinfo=tz))
         assert len(got) == 2
         assert not {"Saturday", "Sunday"} & set(got), got
+
+
+def test_tokenrouter_llm_client_initialization():
+    """Verify TokenRouter provider configures GLM 5.3 Flash/Free and OpenAI client correctly."""
+    from pipeline.llm import LLMClient
+    from openai import OpenAI, AsyncOpenAI
+    from langchain_openai import ChatOpenAI
+
+    client = LLMClient(
+        provider="tokenrouter",
+        api_key="test-tr-key",
+        base_url="https://api.tokenrouter.com/v1",
+    )
+    assert client.provider == "tokenrouter"
+    assert client.base_url == "https://api.tokenrouter.com/v1"
+    assert client.fast_model == "z-ai/glm-5.3-free"
+    assert client.smart_model == "z-ai/glm-5.3-free"
+
+    # Chat model instances
+    fast_chat = client.get_fast_llm()
+    assert isinstance(fast_chat, ChatOpenAI)
+    assert fast_chat.model_name == "z-ai/glm-5.3-free"
+    assert str(fast_chat.openai_api_base) == "https://api.tokenrouter.com/v1"
+
+    smart_chat = client.get_smart_llm()
+    assert isinstance(smart_chat, ChatOpenAI)
+    assert smart_chat.model_name == "z-ai/glm-5.3-free"
+
+    # Raw OpenAI SDK clients
+    raw_client = client.get_openai_client()
+    assert isinstance(raw_client, OpenAI)
+    assert str(raw_client.base_url) == "https://api.tokenrouter.com/v1/"
+    assert raw_client.api_key == "test-tr-key"
+
+    async_client = client.get_async_openai_client()
+    assert isinstance(async_client, AsyncOpenAI)
+    assert str(async_client.base_url) == "https://api.tokenrouter.com/v1/"
+
+
+@pytest.mark.asyncio
+async def test_tokenrouter_structured_generation_mock(monkeypatch):
+    """Test generate_structured with TokenRouter provider."""
+    from unittest.mock import AsyncMock, MagicMock
+    from pipeline.llm import LLMClient
+    from pipeline.schemas import FitEvaluationResult
+
+    client = LLMClient(provider="tokenrouter", api_key="dummy")
+
+    mock_chat = MagicMock()
+    mock_resp = MagicMock()
+    mock_resp.content = (
+        '{"fit_score": 88, "decision": "PROCEED", "summary_reasoning": "High synergy in distributed systems", '
+        '"key_synergies": ["Python", "FastAPI"], "potential_risks": [], "personalized_hook": "Great work on LLMs"}'
+    )
+    mock_chat.ainvoke = AsyncMock(return_value=mock_resp)
+
+    monkeypatch.setattr(client, "get_smart_llm", lambda: mock_chat)
+
+    result = await client.generate_structured(
+        prompt="Evaluate candidate",
+        response_schema=FitEvaluationResult,
+        use_smart=True,
+    )
+    assert isinstance(result, FitEvaluationResult)
+    assert result.fit_score == 88
+    assert result.decision == "PROCEED"
+

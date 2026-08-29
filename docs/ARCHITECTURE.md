@@ -96,9 +96,9 @@ flowchart TD
 ## 3. Core Technical Stack
 
 - **Runtime & Orchestration**: Python 3.11+, LangGraph `StateGraph`, `SqliteSaver` checkpointer.
-- **AI Gateway**: **OpenRouter API** (`https://openrouter.ai/api/v1` - OpenAI-compatible interface).
-  - Fast extraction/classification model: `deepseek/deepseek-chat` (or `google/gemini-2.0-flash-001`)
-  - Deep scoring & drafting model: `deepseek/deepseek-chat` (or `anthropic/claude-3.5-haiku` / `meta-llama/llama-3.3-70b-instruct`)
+- **AI Gateway**: **TokenRouter API** (`https://api.tokenrouter.com/v1`) with full support for OpenRouter (`https://openrouter.ai/api/v1`) and Groq (`https://api.groq.com/openai/v1`).
+  - Default main model (fast extraction & deep drafting): `z-ai/glm-5.3-free` (GLM 5.3 Flash/Free)
+  - Optional fallback models: `deepseek/deepseek-chat`, `google/gemini-2.0-flash-001`, `openai/gpt-oss-120b`, `llama-3.3-70b-versatile`
 - **Web & Search**: `httpx`, `beautifulsoup4`, `feedparser`, Tavily API.
 - **Enrichment**: Hunter.io / Apollo free tier + Tavily Search.
 - **Database**: SQLite with WAL mode (`data/outreach.db`).

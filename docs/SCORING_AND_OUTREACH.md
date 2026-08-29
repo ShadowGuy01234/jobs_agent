@@ -1,8 +1,8 @@
 # AI Scoring Harness & Personalized Outreach Engine
 
-The intelligence layer uses **OpenRouter API** (`https://openrouter.ai/api/v1`) as a single unified LLM gateway:
-- **Fast / Extraction Model**: `deepseek/deepseek-chat` (or `google/gemini-2.0-flash-001`) for rapid normalization and classification.
-- **Reasoning & Drafting Model**: `deepseek/deepseek-chat` / `anthropic/claude-3.5-haiku` for deep candidate fit scoring and hyper-personalized outreach writing.
+The intelligence layer uses **TokenRouter API** (`https://api.tokenrouter.com/v1`) as the primary unified LLM gateway (with OpenRouter and Groq supported as alternatives and automatic failovers):
+- **Default Main Model (Fast Extraction & Smart Drafting)**: `z-ai/glm-5.3-free` (GLM 5.3 Flash/Free) for rapid normalization, classification, deep candidate fit scoring, and hyper-personalized outreach writing.
+- **Alternative / Fallback Models**: `deepseek/deepseek-chat`, `google/gemini-2.0-flash-001`, `openai/gpt-oss-120b`, `llama-3.3-70b-versatile`.
 
 ---
 

@@ -23,9 +23,23 @@ class Settings(BaseSettings):
     LOGS_DIR: Path = BASE_DIR / "data" / "logs"
     LOG_FILE_PATH: Path = BASE_DIR / "data" / "logs" / "outreach.log"
 
-    # LLM Provider Toggle ('openrouter' or 'groq')
+    # LLM Provider Toggle ('tokenrouter', 'openrouter', or 'groq')
     LLM_PROVIDER: str = Field(
-        default="openrouter", description="LLM Provider: 'openrouter' or 'groq'"
+        default="tokenrouter",
+        description="LLM Provider: 'tokenrouter', 'openrouter', or 'groq'",
+    )
+
+    # TokenRouter AI Gateway (Default main model: GLM 5.3 Flash/Free)
+    TOKENROUTER_API_KEY: str = Field(default="", description="TokenRouter API Key")
+    TOKENROUTER_BASE_URL: str = Field(
+        default="https://api.tokenrouter.com/v1", description="TokenRouter Base URL"
+    )
+    TOKENROUTER_FAST_MODEL: str = Field(
+        default="z-ai/glm-5.3-free", description="TokenRouter fast model"
+    )
+    TOKENROUTER_SMART_MODEL: str = Field(
+        default="z-ai/glm-5.3-free",
+        description="TokenRouter smart model",
     )
 
     # OpenRouter AI Gateway

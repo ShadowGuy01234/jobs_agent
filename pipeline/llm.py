@@ -1,10 +1,11 @@
-"""Unified LLM Gateway client supporting OpenRouter and Groq with structured output."""
+"""Unified LLM Gateway client supporting TokenRouter (GLM 5.3), OpenRouter, and Groq with structured output."""
 
 import json
 import logging
 import re
 from typing import Any, Dict, List, Optional, Type, TypeVar
 from langchain_openai import ChatOpenAI
+from openai import AsyncOpenAI, OpenAI
 from pydantic import BaseModel
 
 from config import settings
@@ -70,7 +71,7 @@ def extract_json_from_text(text: str) -> str:
 
 
 class LLMClient:
-    """Unified LLM client supporting OpenRouter and Groq providers."""
+    """Unified LLM client supporting TokenRouter, OpenRouter, and Groq providers."""
 
     def __init__(
         self,
@@ -82,7 +83,12 @@ class LLMClient:
     ):
         self.provider = (provider or settings.LLM_PROVIDER).lower()
 
-        if self.provider == "groq":
+        if self.provider == "tokenrouter":
+            self.api_key = api_key or settings.TOKENROUTER_API_KEY or ""
+            self.base_url = base_url or settings.TOKENROUTER_BASE_URL
+            self.fast_model = fast_model or settings.TOKENROUTER_FAST_MODEL
+            self.smart_model = smart_model or settings.TOKENROUTER_SMART_MODEL
+        elif self.provider == "groq":
             self.api_key = api_key or settings.GROQ_API_KEY or ""
             self.base_url = base_url or settings.GROQ_BASE_URL
             self.fast_model = fast_model or settings.GROQ_FAST_MODEL
@@ -103,7 +109,7 @@ class LLMClient:
     ) -> ChatOpenAI:
         """Create a ChatOpenAI instance configured for the active provider."""
         headers = {}
-        if self.provider == "openrouter":
+        if self.provider in ("openrouter", "tokenrouter"):
             headers = {
                 "HTTP-Referer": "https://github.com/anurag/job_outreach",
                 "X-Title": "Personal Job Outreach System",
@@ -116,6 +122,20 @@ class LLMClient:
             temperature=temperature,
             max_tokens=max_tokens,
             default_headers=headers if headers else None,
+        )
+
+    def get_openai_client(self) -> OpenAI:
+        """Return an OpenAI client configured for the active provider and endpoint."""
+        return OpenAI(
+            base_url=self.base_url,
+            api_key=self.api_key or "sk-dummy-key",
+        )
+
+    def get_async_openai_client(self) -> AsyncOpenAI:
+        """Return an AsyncOpenAI client configured for the active provider and endpoint."""
+        return AsyncOpenAI(
+            base_url=self.base_url,
+            api_key=self.api_key or "sk-dummy-key",
         )
 
     def get_fast_llm(self, temperature: float = 0.1) -> ChatOpenAI:
@@ -157,22 +177,83 @@ class LLMClient:
         try:
             response = await llm.ainvoke(messages)
         except Exception as e:
-            # If primary provider hit a rate limit (429) or token limit and alternative key exists, failover!
-            if ("429" in str(e) or "rate_limit" in str(e).lower()) and self.provider == "groq" and settings.OPENROUTER_API_KEY:
-                logger.warning(f"Groq rate limit encountered ({e}). Automatically failing over to OpenRouter...")
-                fallback_headers = {
-                    "HTTP-Referer": "https://github.com/anurag/job_outreach",
-                    "X-Title": "Personal Job Outreach System",
-                }
-                fallback_client = ChatOpenAI(
-                    model=settings.OPENROUTER_SMART_MODEL if use_smart else settings.OPENROUTER_FAST_MODEL,
-                    api_key=settings.OPENROUTER_API_KEY,
-                    base_url=settings.OPENROUTER_BASE_URL,
-                    # Mirror the primary call's temperature; hardcoding 0.2 here silently
-                    # redrafted rate-limited retries at a different setting than the first try.
-                    temperature=llm.temperature,
-                    default_headers=fallback_headers,
-                )
+            fallback_client = None
+            is_rate_limit = "429" in str(e) or "rate_limit" in str(e).lower()
+
+            if is_rate_limit:
+                if self.provider == "tokenrouter":
+                    if settings.GROQ_API_KEY:
+                        logger.warning(
+                            f"TokenRouter rate limit encountered ({e}). Failing over to Groq..."
+                        )
+                        fallback_client = ChatOpenAI(
+                            model=settings.GROQ_SMART_MODEL if use_smart else settings.GROQ_FAST_MODEL,
+                            api_key=settings.GROQ_API_KEY,
+                            base_url=settings.GROQ_BASE_URL,
+                            temperature=llm.temperature,
+                        )
+                    elif settings.OPENROUTER_API_KEY:
+                        logger.warning(
+                            f"TokenRouter rate limit encountered ({e}). Failing over to OpenRouter..."
+                        )
+                        fallback_client = ChatOpenAI(
+                            model=settings.OPENROUTER_SMART_MODEL if use_smart else settings.OPENROUTER_FAST_MODEL,
+                            api_key=settings.OPENROUTER_API_KEY,
+                            base_url=settings.OPENROUTER_BASE_URL,
+                            temperature=llm.temperature,
+                            default_headers={
+                                "HTTP-Referer": "https://github.com/anurag/job_outreach",
+                                "X-Title": "Personal Job Outreach System",
+                            },
+                        )
+                elif self.provider == "groq":
+                    if settings.TOKENROUTER_API_KEY:
+                        logger.warning(
+                            f"Groq rate limit encountered ({e}). Failing over to TokenRouter..."
+                        )
+                        fallback_client = ChatOpenAI(
+                            model=settings.TOKENROUTER_SMART_MODEL if use_smart else settings.TOKENROUTER_FAST_MODEL,
+                            api_key=settings.TOKENROUTER_API_KEY,
+                            base_url=settings.TOKENROUTER_BASE_URL,
+                            temperature=llm.temperature,
+                        )
+                    elif settings.OPENROUTER_API_KEY:
+                        logger.warning(
+                            f"Groq rate limit encountered ({e}). Failing over to OpenRouter..."
+                        )
+                        fallback_client = ChatOpenAI(
+                            model=settings.OPENROUTER_SMART_MODEL if use_smart else settings.OPENROUTER_FAST_MODEL,
+                            api_key=settings.OPENROUTER_API_KEY,
+                            base_url=settings.OPENROUTER_BASE_URL,
+                            temperature=llm.temperature,
+                            default_headers={
+                                "HTTP-Referer": "https://github.com/anurag/job_outreach",
+                                "X-Title": "Personal Job Outreach System",
+                            },
+                        )
+                elif self.provider == "openrouter":
+                    if settings.TOKENROUTER_API_KEY:
+                        logger.warning(
+                            f"OpenRouter rate limit encountered ({e}). Failing over to TokenRouter..."
+                        )
+                        fallback_client = ChatOpenAI(
+                            model=settings.TOKENROUTER_SMART_MODEL if use_smart else settings.TOKENROUTER_FAST_MODEL,
+                            api_key=settings.TOKENROUTER_API_KEY,
+                            base_url=settings.TOKENROUTER_BASE_URL,
+                            temperature=llm.temperature,
+                        )
+                    elif settings.GROQ_API_KEY:
+                        logger.warning(
+                            f"OpenRouter rate limit encountered ({e}). Failing over to Groq..."
+                        )
+                        fallback_client = ChatOpenAI(
+                            model=settings.GROQ_SMART_MODEL if use_smart else settings.GROQ_FAST_MODEL,
+                            api_key=settings.GROQ_API_KEY,
+                            base_url=settings.GROQ_BASE_URL,
+                            temperature=llm.temperature,
+                        )
+
+            if fallback_client is not None:
                 response = await fallback_client.ainvoke(messages)
             else:
                 raise e

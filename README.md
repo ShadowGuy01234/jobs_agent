@@ -9,7 +9,7 @@ An autonomous, cloud-AI-powered outreach pipeline that discovers **active job po
 - **Dual-Track Discovery**:
   - **Track A (Active Job Openings)**: Ashby, Greenhouse, Lever.
   - **Track B (Early Startups & Stealth — No Job Openings)**: YC Batches, Product Hunt Launches, Hacker News (`Launch HN`/`Show HN`), Indian Startups (Inc42, Entrackr, YourStory), SEC Form D filings, VC stealth feeds, and Tavily search sweeps.
-- **Single AI Gateway (OpenRouter)**: Powered by `OPENROUTER_API_KEY` for DeepSeek V4 Flash / Pro, Claude 3.5 Haiku, Gemini 2.0 Flash, or any model of your choice.
+- **Multi-Provider AI Gateway (TokenRouter / OpenRouter / Groq)**: Powered by `TOKENROUTER_API_KEY` for **GLM 5.3 Flash / Free** (`z-ai/glm-5.3-free`), with full support for OpenRouter (`OPENROUTER_API_KEY` for DeepSeek, Claude, Gemini) and Groq (`GROQ_API_KEY`).
 - **Strict Human-in-the-Loop Gate**: Email delivery is completely isolated outside the autonomous agent graph. Sending only occurs when you explicitly tap `[ ✅ Approve & Send ]` on Telegram.
 - **5–7 Day Follow-Up Check-ins**: Tracks sent emails and prompts you via Telegram: *"Did they reply?"* with 1-tap `[ ✅ Got Reply ]` or `[ ❌ No Reply - Draft Follow-up ]` (which generates a 2-sentence gentle bump).
 - **Contact Fallback & Badging**: Prominently shows founder LinkedIn profile links and badges unverified emails with `⚠️ Low Confidence / Pattern Guess`, plus a `[ ✍️ Provide Email ]` button in Telegram.
@@ -34,9 +34,9 @@ An autonomous, cloud-AI-powered outreach pipeline that discovers **active job po
 │   ┌─────────────────────────────────────┐     │             │
 │   │      LangGraph Orchestrator         │     │             │
 │   │  1. Ingest & Deduplicate            │     │             │
-│   │  2. OpenRouter Fit Scoring (0-100)  │     │             │
+│   │  2. AI Fit Scoring (0-100)          │     │             │
 │   │  3. Tavily & Hunter Research        │     │             │
-│   │  4. OpenRouter Draft Outreach       │     │             │
+│   │  4. AI Draft Outreach               │     │             │
 │   │  5. interrupt() [PAUSED]            │◄────┘             │
 │   │     - Saves state to SQLite         │  (Tap "Approve")  │
 │   │     - Pushes preview to Telegram    │                   │
@@ -75,7 +75,9 @@ pip install -r requirements.txt
 cp .env.example .env
 ```
 Fill in the following key variables in `.env`:
-- `OPENROUTER_API_KEY`: Your OpenRouter API key.
+- `TOKENROUTER_API_KEY`: Your TokenRouter API key (default endpoint for GLM 5.3 Flash/Free).
+- `OPENROUTER_API_KEY`: (Optional) OpenRouter API key.
+- `GROQ_API_KEY`: (Optional) Groq API key for fast inference.
 - `TELEGRAM_BOT_TOKEN`: From [@BotFather](https://t.me/BotFather).
 - `TELEGRAM_CHAT_ID`: Your personal Telegram chat ID (get via [@userinfobot](https://t.me/userinfobot)).
 - `GMAIL_USER`: Your Gmail address.
