@@ -121,6 +121,8 @@ class LLMClient:
             base_url=self.base_url,
             temperature=temperature,
             max_tokens=max_tokens,
+            timeout=90,  # fail fast on a stuck reasoning-model call instead of stalling
+            # the hourly sweep (default SDK timeout is 10min) past its next scheduled run
             default_headers=headers if headers else None,
         )
 
