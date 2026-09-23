@@ -121,7 +121,7 @@ OPENROUTER_SMART_MODEL=deepseek/deepseek-chat
 # 🔍 SEARCH & CONTACT ENRICHMENT
 # ==============================================================================
 TAVILY_API_KEY=your_tavily_api_key_here
-APOLLO_API_KEY=your_apollo_api_key_here
+APOLLO_API_KEY=
 HUNTER_API_KEY=
 
 # ==============================================================================
