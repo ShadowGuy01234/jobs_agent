@@ -65,7 +65,7 @@ python3 --version
 
 ```bash
 # Clone the repository
-git clone https://github.com/your-handle/jobs_agent.git /home/ubuntu/job_outreach
+git clone https://github.com/ShadowGuy01234/jobs_agent.git /home/ubuntu/job_outreach
 
 # Navigate to project directory
 cd /home/ubuntu/job_outreach

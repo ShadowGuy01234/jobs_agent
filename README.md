@@ -84,7 +84,7 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full component breakdow
 ### 1. Clone & install
 
 ```bash
-git clone https://github.com/your-handle/jobs_agent.git
+git clone https://github.com/ShadowGuy01234/jobs_agent.git
 cd jobs_agent
 
 python -m venv venv
@@ -138,7 +138,7 @@ The recommended path is Docker Compose against any always-on Linux host; a nativ
 ### Docker Compose
 
 ```bash
-git clone https://github.com/your-handle/jobs_agent.git
+git clone https://github.com/ShadowGuy01234/jobs_agent.git
 cd jobs_agent
 cp .env.example .env && nano .env
 cp user_profile.example.yaml user_profile.yaml && nano user_profile.yaml
