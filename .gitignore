@@ -20,6 +20,11 @@ data/backups/
 .env
 .env.local
 
+# Personal profile & resume (use the .example versions as templates)
+user_profile.yaml
+profile/resume.md
+profile/*.pdf
+
 # Testing & Coverage
 .pytest_cache/
 .coverage

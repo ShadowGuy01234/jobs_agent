@@ -1,6 +1,11 @@
 # 🎯 Personal AI Startup & Job Outreach System
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](pyproject.toml)
+
 An autonomous, cloud-AI-powered outreach pipeline that discovers **active job postings, early-stage startups, and stealth ventures** (Pre-Seed to Series C, focusing on **Remote & Indian Startups** as well as Global/US tech hubs), evaluates candidate fit against your resume and profile, finds founder contacts and verified emails, drafts hyper-personalized cold outreach (<120 words), and requires your approval via Telegram before any email is dispatched.
+
+This started as my own job-search tool and is shared here as a working reference / portfolio project — fork it and point it at your own profile to run your own search. It's not a maintained product, but issues and PRs are welcome.
 
 ---
 
@@ -86,8 +91,13 @@ Fill in the following key variables in `.env`:
 - `DRY_RUN`: Set to `true` initially to simulate sending without real dispatch.
 
 ### 3. Customize Your Profile (`user_profile.yaml` & `profile/resume.md`)
+```bash
+cp user_profile.example.yaml user_profile.yaml
+cp profile/resume.example.md profile/resume.md
+```
 - Update `user_profile.yaml` with your core skills, achievements with metrics, target stages (e.g. `pre_seed` to `series_c`), and target domains.
-- Drop your resume into `profile/resume.pdf` or edit `profile/resume.md`.
+- Fill in `profile/resume.md`, or drop a `profile/resume.pdf` alongside it.
+- Both `user_profile.yaml` and `profile/resume.md` are gitignored so your personal details never get committed.
 
 ### 4. Run Locally
 ```bash
@@ -165,3 +175,9 @@ pytest
 - [Telegram Human-in-the-Loop Workflow](docs/TELEGRAM_WORKFLOW.md)
 - [Deployment & Oracle Cloud Setup](docs/DEPLOYMENT_AND_ORACLE.md)
 - [Phased Execution Roadmap](docs/PHASED_ROADMAP.md)
+
+---
+
+## 📄 License
+
+MIT — see [LICENSE](LICENSE).

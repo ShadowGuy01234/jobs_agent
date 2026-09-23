@@ -1,0 +1,187 @@
+# ==============================================================================
+# 🎯 PERSONAL AI STARTUP & JOB OUTREACH PROFILE CONFIGURATION
+# ==============================================================================
+# Copy this file to user_profile.yaml and fill in your own details.
+#   cp user_profile.example.yaml user_profile.yaml
+
+candidate:
+  full_name: "Your Name"
+  email: "you@example.com"
+  phone: "+1-555-0100"
+  linkedin: "https://linkedin.com/in/your-handle"
+  github: "https://github.com/your-handle"
+  resume_url: "https://drive.google.com/your-resume-link"
+  portfolio_url: "https://github.com/your-handle"
+
+  # Core identity summary
+  headline: "Full-Stack Engineer specializing in ... (rewrite this for your own positioning)"
+  years_of_experience: 2
+
+  # Core strengths referenced in scoring and outreach
+  core_skills:
+    - "Language / Framework / Domain"
+    - "Language / Framework / Domain"
+    - "Language / Framework / Domain"
+
+  # Concrete proof-of-work achievements with metrics (LLM selects the best match for each pitch)
+  key_achievements:
+    - "Shipped X that did Y, resulting in Z% improvement."
+    - "Built X, an open-source/internal tool solving Y."
+    - "Won/placed in X hackathon/competition with Y project."
+
+  # Tone & Writing Style Rules
+  writing_style:
+    tone: "Concise, technical, peer-to-peer, energetic, proof-of-work focused"
+    max_words: 120
+
+    # Scheduling ask. The two days offered are computed from the current date at draft time
+    # (see pipeline/timeslots.py) — only the timezone and hour window are fixed here.
+    timezone: "Asia/Kolkata"
+    timezone_label: "IST"
+    meeting_window: "7-9pm"
+    meeting_minutes: 15
+
+    anti_patterns:
+      - "No generic buzzwords ('synergy', 'rockstar', 'impressive journey')"
+      - "Never apologize for reaching out ('Sorry to bother you in your busy schedule')"
+      - "Never sound desperate or overly formal"
+      - "Avoid bullet points in the email body; use natural conversational paragraphs"
+      - "Always end with a simple low-friction CTA offering the two specific days supplied in the prompt"
+
+# ==============================================================================
+# 🔍 TARGETING & KNOCKOUT FILTERS
+# ==============================================================================
+
+targeting:
+  # Target funding stages (strictly enforced)
+  target_stages:
+    - "pre_seed"
+    - "seed"
+    - "series_a"
+    - "series_b"
+    - "series_c"
+
+  # Target tech domains
+  target_domains:
+    - "AI Agents & LLM Infrastructure"
+    - "Developer Tools & Code Intelligence"
+    - "Edge AI & Embedded Systems"
+    - "Computer Vision & Multimodal Systems"
+    - "Distributed Backend & Cloud Systems"
+    - "B2B SaaS & High-Growth Startups"
+
+  # Target role titles / scopes
+  target_roles:
+    - "Founding AI / Full-Stack Engineer"
+    - "AI Systems / Agent Engineer"
+    - "Backend Engineer (Python / Node.js)"
+    - "Software Engineer (AI & Infra)"
+    - "Full-Stack Engineer"
+
+  # Geographic & Remote Preferences
+  location:
+    remote_only: true
+    prioritized_regions:
+      - "India"
+      - "Remote Worldwide"
+      - "United States"
+      - "Europe"
+
+  # Hard Knockout Filters (Instant Drop / Score = 0)
+  excluded_sectors:
+    - "Gambling / Online Casinos"
+    - "Crypto Trading Bots / Meme Coins"
+    - "Aggressive AdTech / Lead Gen Spam"
+
+  # Scoring & Volume Controls
+  min_fit_score: 75
+  max_alerts_per_day: 10
+
+# ==============================================================================
+# 📡 DISCOVERY TARGETS
+# ==============================================================================
+# Edit these to retarget the funnel — no code change needed. Leave a list empty
+# (or delete it) to fall back to the defaults baked into that connector.
+# Board slugs discovered automatically by the token expander are merged in on top
+# of these; see data/board_tokens.json.
+
+discovery:
+  greenhouse_boards:
+    - "stripe"
+    - "anthropic"
+    - "openai"
+    - "scaleai"
+    - "figma"
+    - "postman"
+    - "razorpay"
+    - "groww"
+    - "browserbase"
+    - "supabase"
+
+  lever_boards:
+    - "dbtlabs"
+    - "atlassian"
+    - "vercel"
+    - "pinecone"
+    - "deepgram"
+    - "sourcegraph"
+    - "hasura"
+
+  ashby_boards:
+    - "linear"
+    - "cursor"
+    - "perplexity"
+    - "tavily"
+    - "replit"
+    - "cohere"
+    - "sentry"
+    - "together-ai"
+    - "modal"
+    - "langfuse"
+
+  # Leave empty to auto-derive the 4 most recent batches from today's date.
+  yc_batches: []
+
+  hn_queries:
+    - "Launch HN"
+    - "Show HN"
+
+  india_rss:
+    - "https://inc42.com/category/startups/feed/"
+    - "https://entrackr.com/feed/"
+    - "https://yourstory.com/feed"
+
+  vc_rss:
+    - "https://techcrunch.com/category/startups/feed/"
+    - "https://venturebeat.com/category/ai/feed/"
+    - "https://strictlyvc.com/feed/"
+
+  watchlist:
+    - name: "Cursor"
+      domain: "cursor.com"
+      website: "https://cursor.com"
+      stage: "series_a"
+      description: "AI-first code editor built for pair programming with LLMs."
+      tech_stack: ["Python", "TypeScript", "C++", "LLM Inference"]
+      country: "United States"
+    - name: "Linear"
+      domain: "linear.app"
+      website: "https://linear.app"
+      stage: "series_b"
+      description: "The issue tracking tool you'll actually enjoy using. Built for high-performance software teams."
+      tech_stack: ["TypeScript", "GraphQL", "React", "Node.js"]
+      country: "Remote"
+    - name: "Tavily"
+      domain: "tavily.com"
+      website: "https://tavily.com"
+      stage: "seed"
+      description: "Search engine built specifically for AI agents and LLMs."
+      tech_stack: ["Python", "FastAPI", "Distributed Crawling"]
+      country: "Remote"
+    - name: "Postman"
+      domain: "postman.com"
+      website: "https://postman.com"
+      stage: "series_d"
+      description: "API platform for building and using APIs."
+      tech_stack: ["Node.js", "Python", "Cloud Systems"]
+      country: "India / Remote"
