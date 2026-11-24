@@ -51,10 +51,12 @@ jobs:
           username: ${{ secrets.ORACLE_USER }}
           key: ${{ secrets.ORACLE_SSH_KEY }}
           port: 22
+          script_stop: true
           script: |
             echo "🚀 Deploying latest code to Oracle VPS..."
             cd /home/ubuntu/job_outreach
-            git pull origin main
+            git fetch origin main
+            git reset --hard origin/main
             source venv/bin/activate
             pip install -r requirements.txt
             sudo systemctl restart outreach.service
