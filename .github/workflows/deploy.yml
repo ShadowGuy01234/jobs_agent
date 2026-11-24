@@ -28,6 +28,8 @@ jobs:
       - name: Setup Environment
         run: |
           cp .env.example .env
+          [ -f user_profile.yaml ] || cp user_profile.example.yaml user_profile.yaml
+          [ -f profile/resume.md ] || cp profile/resume.example.md profile/resume.md
 
       - name: Run Pytest Suite
         env:

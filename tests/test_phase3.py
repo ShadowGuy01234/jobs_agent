@@ -192,7 +192,7 @@ async def test_follow_up_bump_drafting():
 
     assert "Re:" in draft.subject
     assert "Alex" in draft.body
-    assert "Anurag" in draft.body
+    assert profile.candidate.full_name in draft.body
     assert draft.word_count < 60
 
 
@@ -358,12 +358,19 @@ async def test_llm_failover_on_non_rate_limit_error(monkeypatch):
     assert result.summary_reasoning == "Groq fallback succeeded"
 
 
-def test_find_resume_pdf_detects_named_resume():
-    """find_resume_pdf finds Anurag_Banerjee_Resume.pdf when profile/resume.pdf is absent."""
+def test_find_resume_pdf_detects_named_resume(tmp_path, monkeypatch):
+    """find_resume_pdf finds any *.pdf in PROFILE_DIR and prefers resume.pdf when present."""
+    from config import settings
     from profile.parser import find_resume_pdf
 
-    pdf = find_resume_pdf()
-    assert pdf is not None
-    assert pdf.exists()
-    assert pdf.suffix.lower() == ".pdf"
+    monkeypatch.setattr(settings, "PROFILE_DIR", tmp_path)
+    assert find_resume_pdf() is None
+
+    named_pdf = tmp_path / "Candidate_Resume.pdf"
+    named_pdf.write_bytes(b"%PDF-1.4\n")
+    assert find_resume_pdf() == named_pdf
+
+    preferred_pdf = tmp_path / "resume.pdf"
+    preferred_pdf.write_bytes(b"%PDF-1.4\n")
+    assert find_resume_pdf() == preferred_pdf
 

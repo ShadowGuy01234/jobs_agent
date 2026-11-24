@@ -164,9 +164,9 @@ def test_contact_and_draft_flow(temp_db):
 
 
 def test_profile_and_resume_loading():
-    """Test loading user_profile.yaml and parsing profile/resume.md."""
+    """Test loading user_profile.yaml and parsing resume."""
     profile = load_user_profile()
-    assert "Anurag" in profile.candidate.full_name
+    assert profile.candidate.full_name.strip()
     assert "pre_seed" in profile.targeting.target_stages
     assert "series_c" in profile.targeting.target_stages
     assert profile.targeting.location.remote_only is True
@@ -175,5 +175,4 @@ def test_profile_and_resume_loading():
 
     resume_text = load_resume_text()
     assert resume_text is not None
-    assert "Anurag Banerjee" in resume_text
-    assert "SatyaSetu" in resume_text
+    assert len(resume_text.strip()) > 0
