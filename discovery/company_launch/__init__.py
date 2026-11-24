@@ -4,6 +4,7 @@ from discovery.company_launch.yc_directory import YCDirectoryConnector
 from discovery.company_launch.producthunt import ProductHuntConnector
 from discovery.company_launch.hackernews import HackerNewsConnector
 from discovery.company_launch.hn_hiring import HNHiringConnector
+from discovery.company_launch.hunter_discover import HunterDiscoverConnector
 from discovery.company_launch.indian_startups import IndianStartupsConnector
 from discovery.company_launch.sec_edgar import SecEdgarConnector
 from discovery.company_launch.vc_stealth import VCStealthConnector
@@ -14,6 +15,7 @@ __all__ = [
     "ProductHuntConnector",
     "HackerNewsConnector",
     "HNHiringConnector",
+    "HunterDiscoverConnector",
     "IndianStartupsConnector",
     "SecEdgarConnector",
     "VCStealthConnector",

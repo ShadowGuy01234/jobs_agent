@@ -138,3 +138,81 @@ async def test_90_day_cooldown(temp_db):
 
     skipped_ids = await manager.ingest_opportunities([item2])
     assert len(skipped_ids) == 0
+
+
+@pytest.mark.asyncio
+async def test_hunter_discover_connector_mock(monkeypatch):
+    """Test HunterDiscoverConnector parses /v2/discover results and homepage summary."""
+    from unittest.mock import MagicMock
+    import httpx
+    from discovery.company_launch.hunter_discover import HunterDiscoverConnector
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def post(self, url, **kwargs):
+            resp = MagicMock()
+            resp.status_code = 200
+            resp.json.return_value = {
+                "data": [
+                    {
+                        "domain": "scalekit.com",
+                        "organization": "Scalekit",
+                        "emails_count": {"personal": 15, "generic": 10, "total": 25},
+                    },
+                    {
+                        "domain": "emptyco.io",
+                        "organization": "EmptyCo",
+                        "emails_count": {"personal": 0, "generic": 1, "total": 1},
+                    },
+                ]
+            }
+            return resp
+
+        async def get(self, url, **kwargs):
+            resp = MagicMock()
+            resp.status_code = 200
+            resp.text = (
+                "<html><head><title>Scalekit | Auth for AI Agents</title>"
+                '<meta name="description" content="Enterprise auth stack for AI apps.">'
+                '</head><body><a href="/careers">Careers</a></body></html>'
+            )
+            return resp
+
+    monkeypatch.setattr(httpx, "AsyncClient", FakeClient)
+
+    connector = HunterDiscoverConnector(api_key="test-hunter-key")
+    opps = await connector.fetch_opportunities(limit=5)
+    assert len(opps) == 1
+    assert opps[0].source == DiscoverySource.HUNTER_DISCOVER
+    assert opps[0].company.domain == "scalekit.com"
+    assert opps[0].company.name == "Scalekit"
+    assert "Auth for AI Agents" in opps[0].raw_content
+    assert "/careers" in opps[0].raw_content
+
+
+@pytest.mark.asyncio
+async def test_remote_boards_isolates_failing_feed(monkeypatch):
+    """One failing/timing-out feed must not block results from healthy remote feeds."""
+    from discovery.job_boards.remote_boards import RemoteBoardsConnector
+
+    connector = RemoteBoardsConnector(feeds=["remoteok", "remotive"])
+
+    async def fake_fetch(client, name):
+        if name == "remoteok":
+            raise TimeoutError("simulated connect timeout")
+        return [
+            ("Senior AI Engineer", "AcmeAI", "https://remotive.com/jobs/1", "Remote", True, "Python LangGraph")
+        ]
+
+    monkeypatch.setattr(connector, "_fetch_feed", fake_fetch)
+    opps = await connector.fetch_opportunities(limit=10)
+    assert len(opps) == 1
+    assert opps[0].company.name == "AcmeAI"

@@ -19,14 +19,14 @@ class GreenhouseConnector(BaseDiscoveryConnector):
         self.target_boards = target_boards or [
             "stripe",
             "anthropic",
-            "openai",
             "scaleai",
             "figma",
-            "postman",
-            "razorpay",
             "groww",
-            "browserbase",
-            "supabase",
+            "databricks",
+            "cloudflare",
+            "togetherai",
+            "airtable",
+            "brex",
         ]
 
     async def fetch_board_jobs(self, board_token: str) -> List[RawOpportunity]:

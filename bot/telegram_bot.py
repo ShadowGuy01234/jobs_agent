@@ -5,7 +5,7 @@ import html
 import logging
 import re
 from typing import Any, Dict, Optional
-from telegram import Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ParseMode
 from telegram.ext import (
     Application,
@@ -251,8 +251,8 @@ class TelegramBotController:
             "• <code>/clear</code> — Clear pending reviews and backlog queue (e.g. <code>/clear reviews</code>)\n"
             "• <code>/status</code> — View discovery & outreach metrics\n"
             "• <code>/profile</code> — View your profile & targeting criteria\n"
-            "• <code>/discover [source]</code> — Trigger on-demand discovery (e.g. <code>/discover yc</code>)\n"
-            "• <code>/sources</code> — List all 11 discovery connectors\n"
+            "• <code>/discover [source]</code> — Trigger on-demand discovery (e.g. <code>/discover hunter_discover</code>)\n"
+            "• <code>/sources</code> — List all 14 discovery connectors\n"
             "• <code>/set min_score [number]</code> — Update minimum fit score (e.g. <code>/set min_score 80</code>)\n"
             "• <code>/dry_run [on|off]</code> — Toggle dry-run email sending mode\n"
             "• <code>/logs</code> — View recent diagnostic logs for debugging\n"
@@ -334,12 +334,16 @@ class TelegramBotController:
 
         msg = (
             "📡 <b>Available Discovery Sources</b>\n\n"
+            "<b>Primary (Hunter.io):</b>\n"
+            "• <code>hunter_discover</code> — Hunter.io company &amp; startup discovery (main source)\n\n"
             "<b>Track A (Active Job Openings):</b>\n"
             "• <code>ashby</code> — Ashby public startup job boards\n"
             "• <code>greenhouse</code> — Greenhouse public startup boards\n"
-            "• <code>lever</code> — Lever public startup boards\n\n"
+            "• <code>lever</code> — Lever public startup boards\n"
+            "• <code>remote_boards</code> — Remotive, Arbeitnow &amp; Himalayas remote feeds\n\n"
             "<b>Track B (Early Startups, Launches & Stealth):</b>\n"
             "• <code>yc</code> — Y Combinator (4 most recent batches)\n"
+            "• <code>hn_hiring</code> — Hacker News monthly Who Is Hiring thread\n"
             "• <code>producthunt</code> — Product Hunt trending maker launches\n"
             "• <code>hackernews</code> — Hacker News Launch HN & Show HN\n"
             "• <code>india</code> — Indian startup funding news (Inc42, Entrackr, YourStory)\n"
@@ -349,9 +353,9 @@ class TelegramBotController:
             "• <code>watchlist</code> — Hand-curated target startups\n"
             "• <code>all</code> — Run every discovery connector concurrently\n\n"
             "<b>Usage Examples:</b>\n"
+            "• <code>/discover hunter_discover</code>\n"
             "• <code>/discover yc</code>\n"
-            "• <code>/discover india</code>\n"
-            "• <code>/discover producthunt</code>\n"
+            "• <code>/discover remote_boards</code>\n"
             "• <code>/discover all</code>"
         )
         await update.message.reply_text(msg, parse_mode=ParseMode.HTML)
@@ -525,7 +529,11 @@ class TelegramBotController:
         key, val = args[0].lower(), args[1]
         if key == "min_score":
             try:
-                settings.MIN_FIT_SCORE = int(val)
+                parsed = int(val)
+                if not 0 <= parsed <= 100:
+                    await update.message.reply_text("⚠️ Score must be between 0 and 100.")
+                    return
+                settings.MIN_FIT_SCORE = parsed
                 await update.message.reply_text(f"✅ Minimum fit score updated to {settings.MIN_FIT_SCORE}")
             except ValueError:
                 await update.message.reply_text("⚠️ Score must be an integer (0-100).")

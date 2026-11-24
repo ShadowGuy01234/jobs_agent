@@ -48,8 +48,29 @@ def test_knockout_filters():
 
 
 @pytest.mark.asyncio
-async def test_contact_research_pattern_fallback():
-    """Test contact research pattern matching and confidence badging."""
+async def test_contact_research_pattern_fallback(monkeypatch):
+    """Test contact research pattern matching and confidence badging without burning live APIs."""
+    from unittest.mock import AsyncMock
+    from pipeline.llm import LLMClient
+
+    monkeypatch.setattr("pipeline.nodes.research_contacts.lookup_hunter_domain_search", AsyncMock(return_value=[]))
+    monkeypatch.setattr("pipeline.nodes.research_contacts.lookup_hunter_email_finder", AsyncMock(return_value=None))
+    monkeypatch.setattr("pipeline.nodes.research_contacts.scrape_website_emails", AsyncMock(return_value=[]))
+    monkeypatch.setattr("pipeline.nodes.research_contacts.lookup_apollo_person", AsyncMock(return_value=None))
+    monkeypatch.setattr("pipeline.nodes.research_contacts.settings.TAVILY_API_KEY", "")
+    monkeypatch.setattr(
+        LLMClient,
+        "generate_structured",
+        AsyncMock(
+            return_value=ContactInfoResult(
+                name="Alex Rivera",
+                title="Founder & CEO",
+                email=None,
+                email_confidence="missing",
+            )
+        ),
+    )
+
     company = EnrichedCompanyData(
         name="AgentMorph",
         domain="agentmorph.dev",
@@ -61,6 +82,80 @@ async def test_contact_research_pattern_fallback():
     assert result.name == "Alex Rivera"
     assert result.email in ["alex@agentmorph.dev", "alex.rivera@agentmorph.dev"]
     assert result.email_confidence in ["verified", "low_confidence"]
+
+
+@pytest.mark.asyncio
+async def test_hunter_primary_contact_match(monkeypatch):
+    """Hunter.io domain-search leadership hit short-circuits directly to a verified contact."""
+    from unittest.mock import AsyncMock
+
+    hunter_results = [
+        {
+            "value": "info@acme.ai",
+            "type": "generic",
+            "confidence": 99,
+        },
+        {
+            "value": "jane@acme.ai",
+            "type": "personal",
+            "first_name": "Jane",
+            "last_name": "Doe",
+            "position": "Co-Founder & CTO",
+            "seniority": "executive",
+            "confidence": 94,
+            "linkedin": "https://linkedin.com/in/janedoe",
+            "verification": {"status": "valid"},
+        },
+    ]
+    monkeypatch.setattr(
+        "pipeline.nodes.research_contacts.lookup_hunter_domain_search",
+        AsyncMock(return_value=hunter_results),
+    )
+    scrape_mock = AsyncMock(return_value=[])
+    monkeypatch.setattr("pipeline.nodes.research_contacts.scrape_website_emails", scrape_mock)
+
+    company = EnrichedCompanyData(
+        name="Acme AI",
+        domain="acme.ai",
+        stage="seed",
+        one_liner="AI agents",
+    )
+    result = await research_contact(company)
+    assert result.name == "Jane Doe"
+    assert result.email == "jane@acme.ai"
+    assert result.email_confidence == "verified"
+    assert result.linkedin_url == "https://linkedin.com/in/janedoe"
+    scrape_mock.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_hunter_email_finder_fallback(monkeypatch):
+    """When domain-search has no hit but founder name is known, Hunter email-finder resolves it."""
+    from unittest.mock import AsyncMock
+
+    monkeypatch.setattr("pipeline.nodes.research_contacts.lookup_hunter_domain_search", AsyncMock(return_value=[]))
+    monkeypatch.setattr(
+        "pipeline.nodes.research_contacts.lookup_hunter_email_finder",
+        AsyncMock(
+            return_value={
+                "email": "alex@agentmorph.dev",
+                "score": 95,
+                "position": "Founder & CEO",
+                "verification": {"status": "valid"},
+            }
+        ),
+    )
+
+    company = EnrichedCompanyData(
+        name="AgentMorph",
+        domain="agentmorph.dev",
+        stage="seed",
+        one_liner="Autonomous agents",
+        founders=["Alex Rivera"],
+    )
+    result = await research_contact(company)
+    assert result.email == "alex@agentmorph.dev"
+    assert result.email_confidence == "verified"
 
 
 @pytest.mark.asyncio
@@ -115,6 +210,8 @@ def test_title_relevance_filter():
         # Customer-facing "engineer" titles must lose to the pseudo-engineering check.
         "Sales Engineer",
         "Solutions Engineer",
+        # Non-engineering roles containing generic words like "Platform".
+        "Account Executive, Amer Platform (Growth Velocity)",
         # Regression: bare substring matching let "cto" match inside "Colle(cto)r".
         "Specimen Collector",
     ]:
@@ -157,7 +254,7 @@ def test_timeslots_are_future_business_days():
 
 
 def test_tokenrouter_llm_client_initialization():
-    """Verify TokenRouter provider configures GLM 5.3 Flash/Free and OpenAI client correctly."""
+    """Verify TokenRouter provider configures GLM 5.3 Flash and OpenAI client correctly."""
     from pipeline.llm import LLMClient
     from openai import OpenAI, AsyncOpenAI
     from langchain_openai import ChatOpenAI
@@ -169,18 +266,18 @@ def test_tokenrouter_llm_client_initialization():
     )
     assert client.provider == "tokenrouter"
     assert client.base_url == "https://api.tokenrouter.com/v1"
-    assert client.fast_model == "z-ai/glm-5.3-free"
-    assert client.smart_model == "z-ai/glm-5.3-free"
+    assert client.fast_model == "z-ai/glm-5.3-flash"
+    assert client.smart_model == "z-ai/glm-5.3-flash"
 
     # Chat model instances
     fast_chat = client.get_fast_llm()
     assert isinstance(fast_chat, ChatOpenAI)
-    assert fast_chat.model_name == "z-ai/glm-5.3-free"
+    assert fast_chat.model_name == "z-ai/glm-5.3-flash"
     assert str(fast_chat.openai_api_base) == "https://api.tokenrouter.com/v1"
 
     smart_chat = client.get_smart_llm()
     assert isinstance(smart_chat, ChatOpenAI)
-    assert smart_chat.model_name == "z-ai/glm-5.3-free"
+    assert smart_chat.model_name == "z-ai/glm-5.3-flash"
 
     # Raw OpenAI SDK clients
     raw_client = client.get_openai_client()
@@ -220,4 +317,53 @@ async def test_tokenrouter_structured_generation_mock(monkeypatch):
     assert isinstance(result, FitEvaluationResult)
     assert result.fit_score == 88
     assert result.decision == "PROCEED"
+
+
+@pytest.mark.asyncio
+async def test_llm_failover_on_non_rate_limit_error(monkeypatch):
+    """Primary provider 404/503/timeout failures fail over cleanly to configured fallback providers."""
+    from unittest.mock import AsyncMock, MagicMock
+    from pipeline.llm import LLMClient
+    from pipeline.schemas import FitEvaluationResult
+
+    client = LLMClient(provider="tokenrouter", api_key="dummy-tr")
+
+    failing_chat = MagicMock()
+    failing_chat.model_name = "z-ai/glm-5.3-free"
+    failing_chat.temperature = 0.2
+    failing_chat.ainvoke = AsyncMock(side_effect=RuntimeError("Error code: 404 - model_not_found"))
+
+    fallback_chat = MagicMock()
+    fallback_chat.model_name = "openai/gpt-oss-120b"
+    fallback_resp = MagicMock()
+    fallback_resp.content = (
+        '{"fit_score": 84, "decision": "PROCEED", "summary_reasoning": "Groq fallback succeeded", '
+        '"key_synergies": ["Python"], "potential_risks": [], "personalized_hook": "Fast inference"}'
+    )
+    fallback_chat.ainvoke = AsyncMock(return_value=fallback_resp)
+
+    monkeypatch.setattr(client, "get_smart_llm", lambda: failing_chat)
+    monkeypatch.setattr(
+        client,
+        "_build_fallback_chat_model",
+        lambda prov, use_smart, temperature: fallback_chat if prov == "groq" else None,
+    )
+
+    result = await client.generate_structured(
+        prompt="Evaluate candidate",
+        response_schema=FitEvaluationResult,
+        use_smart=True,
+    )
+    assert result.fit_score == 84
+    assert result.summary_reasoning == "Groq fallback succeeded"
+
+
+def test_find_resume_pdf_detects_named_resume():
+    """find_resume_pdf finds Anurag_Banerjee_Resume.pdf when profile/resume.pdf is absent."""
+    from profile.parser import find_resume_pdf
+
+    pdf = find_resume_pdf()
+    assert pdf is not None
+    assert pdf.exists()
+    assert pdf.suffix.lower() == ".pdf"
 

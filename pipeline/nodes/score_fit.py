@@ -4,6 +4,7 @@ import logging
 import re
 from typing import Optional
 
+from config import settings
 from profile.models import UserProfile
 from profile.parser import load_user_profile
 from pipeline.llm import LLMClient
@@ -16,6 +17,18 @@ logger = logging.getLogger(__name__)
 PSEUDO_ENGINEERING_TITLES = (
     "sales engineer", "solutions engineer", "solution engineer", "support engineer",
     "customer engineer", "field engineer", "implementation engineer", "sales engineering",
+)
+
+# Non-engineering business roles that can accidentally contain a generic keyword like "platform"
+# (e.g. "Account Executive, Amer Platform"). Rejected unless paired with a core builder keyword.
+NON_ENGINEERING_TITLES = (
+    "account executive", "business development", "sales development", "technical recruiter",
+    "recruiter", "talent acquisition", "customer success", "marketing manager", "growth marketing",
+    "people operations", "human resources", "payroll",
+)
+_CORE_BUILDER_RE = re.compile(
+    r"\b(engineer|engineering|developer|programmer|swe|sde|architect|sre|devops|scientist|cto)\b",
+    re.I,
 )
 
 # An allowlist rather than a blocklist: aggregator feeds carry retail, medical and teaching
@@ -50,6 +63,10 @@ def check_title_relevance(opp_title: str, opportunity_type: str) -> Optional[str
     for kw in PSEUDO_ENGINEERING_TITLES:
         if kw in title_lower:
             return f"Customer-facing (not engineering) role '{kw}': {opp_title}"
+
+    for kw in NON_ENGINEERING_TITLES:
+        if kw in title_lower and not _CORE_BUILDER_RE.search(title_lower):
+            return f"Non-engineering role '{kw}': {opp_title}"
 
     if not _ENGINEERING_RE.search(title_lower):
         return f"No engineering signal in job title: {opp_title}"
@@ -125,6 +142,8 @@ async def score_opportunity_fit(
     cand = user_profile.candidate
     targeting = user_profile.targeting
 
+    effective_min_score = settings.MIN_FIT_SCORE if profile is None else targeting.min_fit_score
+
     prompt = f"""
 You are an elite technical career advisor and talent partner. Evaluate whether this opportunity is a high-conviction match for the candidate.
 
@@ -161,7 +180,7 @@ Raw Description / Job Details:
 3. Growth & Backing Signal (25 pts): YC batch, reputable venture backers, strong founder pedigree, or high traction.
 4. Stage & Remote Fit (15 pts): Sweet-spot stage (Pre-Seed to Series C), founding/early engineer scope, and remote compatibility (especially India / Global remote).
 
-Threshold: A score >= {targeting.min_fit_score} yields decision 'PROCEED', otherwise 'DROP'.
+Threshold: A score >= {effective_min_score} yields decision 'PROCEED', otherwise 'DROP'.
 
 Evaluate objectively. Provide concrete reasoning, key synergies, potential risks, and a personalized hook for outreach.
 """
@@ -173,7 +192,7 @@ Evaluate objectively. Provide concrete reasoning, key synergies, potential risks
     )
 
     # Double-check decision against threshold
-    if result.fit_score < targeting.min_fit_score:
+    if result.fit_score < effective_min_score:
         result.decision = "DROP"
     else:
         result.decision = "PROCEED"

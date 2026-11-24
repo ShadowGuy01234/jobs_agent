@@ -16,13 +16,11 @@ class LeverConnector(BaseDiscoveryConnector):
 
     def __init__(self, target_companies: Optional[List[str]] = None):
         self.target_companies = target_companies or [
-            "dbtlabs",
-            "atlassian",
-            "vercel",
-            "pinecone",
-            "deepgram",
-            "sourcegraph",
-            "hasura",
+            "neon",
+            "palantir",
+            "zoox",
+            "wealthfront",
+            "spotify",
         ]
 
     async def fetch_company_jobs(self, company_slug: str) -> List[RawOpportunity]:

@@ -630,7 +630,7 @@ def get_system_stats(db_path: Optional[Path] = None) -> Dict[str, int]:
 def get_pending_approval_opportunities(
     limit: int = 10, db_path: Optional[Path] = None
 ) -> List[Dict[str, Any]]:
-    """Retrieve opportunities with status 'pending_approval' and their drafted payloads."""
+    """Retrieve opportunities with status 'pending_approval' and their latest drafted payloads."""
     with get_db_connection(db_path) as conn:
         cursor = conn.cursor()
         cursor.execute(
@@ -644,8 +644,12 @@ def get_pending_approval_opportunities(
             FROM opportunities o
             JOIN companies c ON o.company_id = c.id
             LEFT JOIN evaluations e ON o.id = e.opportunity_id
-            LEFT JOIN contacts ct ON c.id = ct.company_id
-            LEFT JOIN outreach_drafts d ON o.id = d.opportunity_id
+            LEFT JOIN contacts ct ON ct.id = (
+                SELECT id FROM contacts WHERE company_id = c.id ORDER BY id DESC LIMIT 1
+            )
+            LEFT JOIN outreach_drafts d ON d.id = (
+                SELECT id FROM outreach_drafts WHERE opportunity_id = o.id ORDER BY id DESC LIMIT 1
+            )
             WHERE o.status = 'pending_approval'
             ORDER BY o.id DESC
             LIMIT ?

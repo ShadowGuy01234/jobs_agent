@@ -9,6 +9,7 @@ from typing import Optional
 from config import settings
 from db.database import count_live_sends_today, log_audit, record_sent_email, update_opportunity_status
 from pipeline.state import OpportunityPipelineState
+from profile.parser import find_resume_pdf
 
 logger = logging.getLogger(__name__)
 
@@ -39,8 +40,8 @@ def send_email_via_smtp(
     msg.set_content(body)
 
     # Attach resume PDF if available
-    pdf_target = attachment_path or (settings.BASE_DIR / "profile" / "resume.pdf")
-    if pdf_target.exists():
+    pdf_target = attachment_path or find_resume_pdf()
+    if pdf_target and pdf_target.exists():
         try:
             with open(pdf_target, "rb") as f:
                 pdf_data = f.read()
@@ -48,7 +49,7 @@ def send_email_via_smtp(
                 pdf_data,
                 maintype="application",
                 subtype="pdf",
-                filename="Anurag_Banerjee_Resume.pdf",
+                filename=pdf_target.name,
             )
             logger.info(f"Attached resume PDF ({len(pdf_data)} bytes) to email for {to_email}")
         except Exception as e:

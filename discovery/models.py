@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field
 
 
 class DiscoverySource(str, Enum):
+    HUNTER_DISCOVER = "hunter_discover"
     ASHBY = "ashby"
     GREENHOUSE = "greenhouse"
     LEVER = "lever"

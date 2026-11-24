@@ -33,17 +33,18 @@ from pipeline.orchestrator import PipelineOrchestrator
 
 logger = logging.getLogger(__name__)
 
-# Complete list of discovery connectors to rotate through
+# Complete list of discovery connectors to rotate through (Hunter Discover is primary)
 ROTATING_SOURCES: List[str] = [
+    "hunter_discover",
     "yc",
     "hn_hiring",
+    "ashby",
     "remote_boards",
+    "greenhouse",
     "hackernews",
     "india",
     "producthunt",
     "tavily_stealth",
-    "ashby",
-    "greenhouse",
     "lever",
     "vc_stealth",
     "sec_edgar",
@@ -60,6 +61,27 @@ class OutreachScheduler:
         self.orchestrator = PipelineOrchestrator()
         self.bot_app = bot_app
         self.current_source_index = 0
+
+    async def _send_telegram(self, text: str, reply_markup: Optional[Any] = None) -> None:
+        """Send a Telegram message if configured, surfacing actionable guidance on @username errors."""
+        if not self.bot_app or not settings.TELEGRAM_CHAT_ID:
+            return
+        try:
+            await self.bot_app.bot.send_message(
+                chat_id=settings.TELEGRAM_CHAT_ID,
+                text=text,
+                reply_markup=reply_markup,
+                parse_mode="HTML",
+            )
+        except Exception as e:
+            err = str(e)
+            if "chat not found" in err.lower() and str(settings.TELEGRAM_CHAT_ID).startswith("@"):
+                logger.warning(
+                    f"Telegram send skipped: TELEGRAM_CHAT_ID={settings.TELEGRAM_CHAT_ID!r} cannot be resolved "
+                    "by @username. Send /start to the bot in Telegram or set the numeric chat ID in .env."
+                )
+            else:
+                logger.warning(f"Failed to send Telegram message: {e}")
 
     async def run_scheduled_discovery(self) -> None:
         """Hourly rotating discovery sweep (2 sources per hour) with Telegram report."""
@@ -126,12 +148,7 @@ class OutreachScheduler:
 
                 if self.bot_app and settings.TELEGRAM_CHAT_ID:
                     text, keyboard = render_opportunity_card(payload)
-                    await self.bot_app.bot.send_message(
-                        chat_id=settings.TELEGRAM_CHAT_ID,
-                        text=text,
-                        reply_markup=keyboard,
-                        parse_mode="HTML",
-                    )
+                    await self._send_telegram(text, reply_markup=keyboard)
                 log_audit(
                     event_type="alert_card_sent",
                     message=f"Opportunity card sent for {company_name} ({fit_score}/100)",
@@ -157,23 +174,13 @@ class OutreachScheduler:
                     f"<i>⏭ Next Hourly Sweep (in 1 hr): <code>{next_s1}</code>, <code>{next_s2}</code></i>"
                 )
 
-                await self.bot_app.bot.send_message(
-                    chat_id=settings.TELEGRAM_CHAT_ID,
-                    text=hourly_report_msg,
-                    parse_mode="HTML",
-                )
+                await self._send_telegram(hourly_report_msg)
 
         except Exception as e:
             logger.error(f"Error during hourly rotating discovery: {e}", exc_info=True)
-            if self.bot_app and settings.TELEGRAM_CHAT_ID:
-                try:
-                    await self.bot_app.bot.send_message(
-                        chat_id=settings.TELEGRAM_CHAT_ID,
-                        text=f"⚠️ <b>Hourly Discovery Notice:</b> Error scanning <code>{s1}</code>, <code>{s2}</code>: {html.escape(str(e))}",
-                        parse_mode="HTML",
-                    )
-                except Exception:
-                    pass
+            await self._send_telegram(
+                f"⚠️ <b>Hourly Discovery Notice:</b> Error scanning <code>{s1}</code>, <code>{s2}</code>: {html.escape(str(e))}"
+            )
 
     async def run_follow_up_check(self) -> None:
         """Daily scan for emails sent 5-7 days ago needing Telegram check-ins."""
@@ -185,12 +192,7 @@ class OutreachScheduler:
             if self.bot_app and settings.TELEGRAM_CHAT_ID and pending_items:
                 for item in pending_items[:5]:  # Send max 5 check-ins at a time to avoid spam
                     text, keyboard = render_follow_up_card(item)
-                    await self.bot_app.bot.send_message(
-                        chat_id=settings.TELEGRAM_CHAT_ID,
-                        text=text,
-                        reply_markup=keyboard,
-                        parse_mode="HTML",
-                    )
+                    await self._send_telegram(text, reply_markup=keyboard)
         except Exception as e:
             logger.error(f"Error during follow-up check: {e}", exc_info=True)
 
@@ -208,10 +210,8 @@ class OutreachScheduler:
 
             if added and self.bot_app and settings.TELEGRAM_CHAT_ID:
                 detail = ", ".join(f"<code>{p}</code> +{len(t)}" for p, t in found.items() if t)
-                await self.bot_app.bot.send_message(
-                    chat_id=settings.TELEGRAM_CHAT_ID,
-                    text=f"📡 <b>Discovery expanded:</b> {added} new job board(s) found — {detail}",
-                    parse_mode="HTML",
+                await self._send_telegram(
+                    f"📡 <b>Discovery expanded:</b> {added} new job board(s) found — {detail}"
                 )
         except Exception as e:
             logger.error(f"Error during board token expansion: {e}", exc_info=True)

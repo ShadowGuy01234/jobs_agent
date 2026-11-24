@@ -21,13 +21,15 @@ class AshbyConnector(BaseDiscoveryConnector):
             "linear",
             "cursor",
             "perplexity",
-            "tavily",
+            "openai",
+            "supabase",
             "replit",
             "cohere",
             "sentry",
-            "together-ai",
             "modal",
-            "langfuse",
+            "langchain",
+            "posthog",
+            "ramp",
         ]
 
     async def fetch_board_jobs(self, board_slug: str) -> List[RawOpportunity]:

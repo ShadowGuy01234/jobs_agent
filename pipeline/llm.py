@@ -3,7 +3,7 @@
 import json
 import logging
 import re
-from typing import Any, Dict, List, Optional, Type, TypeVar
+from typing import Any, Dict, List, Optional, Tuple, Type, TypeVar
 from langchain_openai import ChatOpenAI
 from openai import AsyncOpenAI, OpenAI
 from pydantic import BaseModel
@@ -13,6 +13,12 @@ from config import settings
 logger = logging.getLogger(__name__)
 
 T = TypeVar("T", bound=BaseModel)
+
+_PROVIDER_FAILOVER_ORDER = ("tokenrouter", "groq", "openrouter")
+_GATEWAY_HEADERS = {
+    "HTTP-Referer": "https://github.com/anurag/job_outreach",
+    "X-Title": "Personal Job Outreach System",
+}
 
 
 def extract_json_from_text(text: str) -> str:
@@ -148,6 +154,54 @@ class LLMClient:
         """Smart reasoning model for candidate fit scoring and hyper-personalized drafting."""
         return self.get_chat_model(self.smart_model, temperature=temperature)
 
+    def _provider_config(self, provider: str) -> tuple[str, str, str, str]:
+        """Return (api_key, base_url, fast_model, smart_model) for a named provider."""
+        p = provider.lower()
+        if p == "tokenrouter":
+            return (
+                settings.TOKENROUTER_API_KEY or "",
+                settings.TOKENROUTER_BASE_URL,
+                settings.TOKENROUTER_FAST_MODEL,
+                settings.TOKENROUTER_SMART_MODEL,
+            )
+        if p == "groq":
+            return (
+                settings.GROQ_API_KEY or "",
+                settings.GROQ_BASE_URL,
+                settings.GROQ_FAST_MODEL,
+                settings.GROQ_SMART_MODEL,
+            )
+        return (
+            settings.OPENROUTER_API_KEY or "",
+            settings.OPENROUTER_BASE_URL,
+            settings.OPENROUTER_FAST_MODEL,
+            settings.OPENROUTER_SMART_MODEL,
+        )
+
+    def _build_fallback_chat_model(
+        self, provider: str, use_smart: bool, temperature: float
+    ) -> Optional[ChatOpenAI]:
+        """Construct a ChatOpenAI instance for a configured fallback provider."""
+        api_key, base_url, fast_model, smart_model = self._provider_config(provider)
+        if not api_key or api_key.startswith("your_") or api_key.startswith("gsk_your_"):
+            return None
+        headers = (
+            {
+                "HTTP-Referer": "https://github.com/anurag/job_outreach",
+                "X-Title": "Personal Job Outreach System",
+            }
+            if provider in ("openrouter", "tokenrouter")
+            else None
+        )
+        return ChatOpenAI(
+            model=smart_model if use_smart else fast_model,
+            api_key=api_key,
+            base_url=base_url,
+            temperature=temperature,
+            timeout=90,
+            default_headers=headers,
+        )
+
     async def generate_structured(
         self,
         prompt: str,
@@ -155,8 +209,8 @@ class LLMClient:
         use_smart: bool = True,
         system_prompt: Optional[str] = None,
     ) -> T:
-        """Generate structured JSON and parse into Pydantic model."""
-        llm = self.get_smart_llm() if use_smart else self.get_fast_llm()
+        """Generate structured JSON and parse into Pydantic model, failing over across configured providers."""
+        primary_llm = self.get_smart_llm() if use_smart else self.get_fast_llm()
 
         schema_json = json.dumps(response_schema.model_json_schema(), indent=2)
         system = system_prompt or (
@@ -176,104 +230,37 @@ class LLMClient:
             {"role": "user", "content": full_prompt},
         ]
 
-        try:
-            response = await llm.ainvoke(messages)
-        except Exception as e:
-            fallback_client = None
-            is_rate_limit = "429" in str(e) or "rate_limit" in str(e).lower()
+        fallback_order = [p for p in ("groq", "openrouter", "tokenrouter") if p != self.provider]
+        attempts: List[tuple[str, ChatOpenAI]] = [(self.provider, primary_llm)]
+        temperature = getattr(primary_llm, "temperature", 0.3 if use_smart else 0.1)
+        for prov in fallback_order:
+            fb = self._build_fallback_chat_model(prov, use_smart=use_smart, temperature=temperature)
+            if fb is not None:
+                attempts.append((prov, fb))
 
-            if is_rate_limit:
-                if self.provider == "tokenrouter":
-                    if settings.GROQ_API_KEY:
-                        logger.warning(
-                            f"TokenRouter rate limit encountered ({e}). Failing over to Groq..."
-                        )
-                        fallback_client = ChatOpenAI(
-                            model=settings.GROQ_SMART_MODEL if use_smart else settings.GROQ_FAST_MODEL,
-                            api_key=settings.GROQ_API_KEY,
-                            base_url=settings.GROQ_BASE_URL,
-                            temperature=llm.temperature,
-                        )
-                    elif settings.OPENROUTER_API_KEY:
-                        logger.warning(
-                            f"TokenRouter rate limit encountered ({e}). Failing over to OpenRouter..."
-                        )
-                        fallback_client = ChatOpenAI(
-                            model=settings.OPENROUTER_SMART_MODEL if use_smart else settings.OPENROUTER_FAST_MODEL,
-                            api_key=settings.OPENROUTER_API_KEY,
-                            base_url=settings.OPENROUTER_BASE_URL,
-                            temperature=llm.temperature,
-                            default_headers={
-                                "HTTP-Referer": "https://github.com/anurag/job_outreach",
-                                "X-Title": "Personal Job Outreach System",
-                            },
-                        )
-                elif self.provider == "groq":
-                    if settings.TOKENROUTER_API_KEY:
-                        logger.warning(
-                            f"Groq rate limit encountered ({e}). Failing over to TokenRouter..."
-                        )
-                        fallback_client = ChatOpenAI(
-                            model=settings.TOKENROUTER_SMART_MODEL if use_smart else settings.TOKENROUTER_FAST_MODEL,
-                            api_key=settings.TOKENROUTER_API_KEY,
-                            base_url=settings.TOKENROUTER_BASE_URL,
-                            temperature=llm.temperature,
-                        )
-                    elif settings.OPENROUTER_API_KEY:
-                        logger.warning(
-                            f"Groq rate limit encountered ({e}). Failing over to OpenRouter..."
-                        )
-                        fallback_client = ChatOpenAI(
-                            model=settings.OPENROUTER_SMART_MODEL if use_smart else settings.OPENROUTER_FAST_MODEL,
-                            api_key=settings.OPENROUTER_API_KEY,
-                            base_url=settings.OPENROUTER_BASE_URL,
-                            temperature=llm.temperature,
-                            default_headers={
-                                "HTTP-Referer": "https://github.com/anurag/job_outreach",
-                                "X-Title": "Personal Job Outreach System",
-                            },
-                        )
-                elif self.provider == "openrouter":
-                    if settings.TOKENROUTER_API_KEY:
-                        logger.warning(
-                            f"OpenRouter rate limit encountered ({e}). Failing over to TokenRouter..."
-                        )
-                        fallback_client = ChatOpenAI(
-                            model=settings.TOKENROUTER_SMART_MODEL if use_smart else settings.TOKENROUTER_FAST_MODEL,
-                            api_key=settings.TOKENROUTER_API_KEY,
-                            base_url=settings.TOKENROUTER_BASE_URL,
-                            temperature=llm.temperature,
-                        )
-                    elif settings.GROQ_API_KEY:
-                        logger.warning(
-                            f"OpenRouter rate limit encountered ({e}). Failing over to Groq..."
-                        )
-                        fallback_client = ChatOpenAI(
-                            model=settings.GROQ_SMART_MODEL if use_smart else settings.GROQ_FAST_MODEL,
-                            api_key=settings.GROQ_API_KEY,
-                            base_url=settings.GROQ_BASE_URL,
-                            temperature=llm.temperature,
-                        )
+        last_error: Optional[Exception] = None
+        for idx, (prov_name, llm) in enumerate(attempts):
+            try:
+                response = await llm.ainvoke(messages)
+                raw_content = (response.content or "").strip()
+                extracted_json = extract_json_from_text(raw_content)
+                data = json.loads(extracted_json)
+                return response_schema.model_validate(data)
+            except Exception as e:
+                last_error = e
+                has_next = idx + 1 < len(attempts)
+                model_label = getattr(llm, "model_name", "unknown")
+                if has_next:
+                    next_prov = attempts[idx + 1][0]
+                    logger.warning(
+                        f"LLM call failed on {prov_name}/{model_label} ({type(e).__name__}: {e}). "
+                        f"Failing over to {next_prov}..."
+                    )
+                else:
+                    logger.error(
+                        f"Failed LLM structured JSON on {prov_name}/{model_label}: {e}"
+                    )
 
-            if fallback_client is not None:
-                response = await fallback_client.ainvoke(messages)
-            else:
-                raise e
-
-        raw_content = response.content.strip()
-
-        # Clean reasoning tokens (<think>...</think>), draft outlines, markdown fences
-        extracted_json = extract_json_from_text(raw_content)
-
-        try:
-            data = json.loads(extracted_json)
-            return response_schema.model_validate(data)
-        except Exception as e:
-            logger.error(
-                f"Failed to parse LLM structured JSON ({self.provider}/{llm.model_name}): {e}\n"
-                f"Extracted JSON:\n{extracted_json}\n"
-                f"Raw Content:\n{raw_content}"
-            )
-            raise ValueError(
-                f"LLM did not return valid JSON for schema {response_schema.__name__}: {e}"
-            )
+        raise ValueError(
+            f"All configured LLM providers failed for schema {response_schema.__name__}: {last_error}"
+        )

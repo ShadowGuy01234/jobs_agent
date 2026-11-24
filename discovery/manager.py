@@ -18,6 +18,7 @@ from discovery.board_tokens import merge_board_tokens
 from discovery.company_launch import (
     HackerNewsConnector,
     HNHiringConnector,
+    HunterDiscoverConnector,
     IndianStartupsConnector,
     ProductHuntConnector,
     SecEdgarConnector,
@@ -55,6 +56,8 @@ class DiscoveryManager:
             targets = DiscoveryTargets()
 
         self.connectors: Dict[str, BaseDiscoveryConnector] = {
+            # Primary Discovery Engine (Hunter.io Discover)
+            "hunter_discover": HunterDiscoverConnector(),
             # Track A: Job Boards
             "ashby": AshbyConnector(target_boards=merge_board_tokens("ashby", targets.ashby_boards)),
             "greenhouse": GreenhouseConnector(target_boards=merge_board_tokens("greenhouse", targets.greenhouse_boards)),

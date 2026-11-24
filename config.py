@@ -29,16 +29,16 @@ class Settings(BaseSettings):
         description="LLM Provider: 'tokenrouter', 'openrouter', or 'groq'",
     )
 
-    # TokenRouter AI Gateway (Default main model: GLM 5.3 Flash/Free)
+    # TokenRouter AI Gateway (Default main model: GLM 5.3 Flash)
     TOKENROUTER_API_KEY: str = Field(default="", description="TokenRouter API Key")
     TOKENROUTER_BASE_URL: str = Field(
         default="https://api.tokenrouter.com/v1", description="TokenRouter Base URL"
     )
     TOKENROUTER_FAST_MODEL: str = Field(
-        default="z-ai/glm-5.3-free", description="TokenRouter fast model"
+        default="z-ai/glm-5.3-flash", description="TokenRouter fast model"
     )
     TOKENROUTER_SMART_MODEL: str = Field(
-        default="z-ai/glm-5.3-free",
+        default="z-ai/glm-5.3-flash",
         description="TokenRouter smart model",
     )
 

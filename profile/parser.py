@@ -37,13 +37,22 @@ def extract_text_from_markdown(md_path: Path) -> str:
         return ""
 
 
+def find_resume_pdf() -> Optional[Path]:
+    """Locate the candidate PDF resume (preferring resume.pdf, falling back to any *.pdf in profile/)."""
+    preferred = settings.PROFILE_DIR / "resume.pdf"
+    if preferred.exists():
+        return preferred
+    pdfs = sorted(settings.PROFILE_DIR.glob("*.pdf"))
+    return pdfs[0] if pdfs else None
+
+
 def load_resume_text() -> Optional[str]:
-    """Scan profile directory for resume.pdf or resume.md."""
-    pdf_resume = settings.PROFILE_DIR / "resume.pdf"
-    if pdf_resume.exists():
+    """Scan profile directory for a PDF resume or resume.md."""
+    pdf_resume = find_resume_pdf()
+    if pdf_resume and pdf_resume.exists():
         extracted = extract_text_from_pdf(pdf_resume)
         if extracted.strip():
-            logger.info("Successfully parsed resume from profile/resume.pdf")
+            logger.info(f"Successfully parsed resume from profile/{pdf_resume.name}")
             return extracted
 
     md_resume = settings.PROFILE_DIR / "resume.md"

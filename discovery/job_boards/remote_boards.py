@@ -10,6 +10,7 @@ Attribution note: RemoteOK's API terms ask consumers to credit Remote OK and lin
 opportunity keeps its canonical remoteok.com URL, which is what the outreach flow surfaces.
 """
 
+import asyncio
 import html as html_lib
 import logging
 import re
@@ -148,16 +149,25 @@ class RemoteBoardsConnector(BaseDiscoveryConnector):
     async def fetch_opportunities(self, limit: int = 25) -> List[RawOpportunity]:
         opportunities: List[RawOpportunity] = []
         seen: set[str] = set()
-        per_feed = max(1, limit // max(1, len(self.feeds)))
+        valid_feeds = [name for name in self.feeds if name in FEEDS]
+        for name in self.feeds:
+            if name not in FEEDS:
+                logger.warning(f"Unknown remote feed '{name}', skipping.")
+        per_feed = max(1, limit // max(1, len(valid_feeds)))
 
-        async with httpx.AsyncClient(timeout=25.0, follow_redirects=True, headers=_HEADERS) as client:
-            for name in self.feeds:
-                if name not in FEEDS:
-                    logger.warning(f"Unknown remote feed '{name}', skipping.")
+        async with httpx.AsyncClient(timeout=10.0, follow_redirects=True, headers=_HEADERS) as client:
+            feed_results = await asyncio.gather(
+                *(self._fetch_feed(client, name) for name in valid_feeds),
+                return_exceptions=True,
+            )
+
+            for name, rows in zip(valid_feeds, feed_results):
+                if isinstance(rows, Exception):
+                    logger.warning(f"Remote feed {name} failed: {rows}")
                     continue
 
                 kept = 0
-                for title, company, url, location, is_remote, description in await self._fetch_feed(client, name):
+                for title, company, url, location, is_remote, description in rows:
                     if kept >= per_feed:
                         break
                     if not title or not company or not url or not is_remote:
