@@ -39,6 +39,18 @@ LEADERSHIP_TITLES = (
     "director",
 )
 
+ENG_LEADERSHIP_TITLES = (
+    "cto",
+    "vp engineering",
+    "vp of engineering",
+    "head of engineering",
+    "engineering manager",
+    "director of engineering",
+    "head of ai",
+    "tech lead",
+    "engineering",
+)
+
 ROLE_BASED_INBOXES = ["careers", "talent", "hello", "team", "jobs", "founders"]
 
 
@@ -144,7 +156,7 @@ async def lookup_hunter_domain_search(domain: str) -> List[Dict[str, Any]]:
             resp = await client.get(
                 "https://api.hunter.io/v2/domain-search",
                 headers={"X-API-KEY": settings.HUNTER_API_KEY},
-                params={"domain": domain, "limit": 10},
+                params={"domain": domain, "limit": 10, "type": "personal"},
             )
             if resp.status_code == 200:
                 return resp.json().get("data", {}).get("emails", [])
@@ -192,13 +204,16 @@ async def lookup_hunter_email_finder(domain: str, person_name: Optional[str]) ->
 
 
 def _pick_best_hunter_contact(
-    hunter_emails: List[Dict[str, Any]], target_person: Optional[str] = None
+    hunter_emails: List[Dict[str, Any]],
+    target_person: Optional[str] = None,
+    opportunity_type: str = "founder_reachout",
 ) -> Optional[ContactInfoResult]:
     """Select the strongest personal/leadership contact from Hunter domain-search results."""
     if not hunter_emails:
         return None
 
     target_lower = (target_person or "").strip().lower()
+    is_job_posting = opportunity_type == "job_posting"
     best_score = -1
     best_entry: Optional[Dict[str, Any]] = None
 
@@ -228,6 +243,10 @@ def _pick_best_hunter_contact(
             score += 120
         if any(title in pos_lower for title in LEADERSHIP_TITLES):
             score += 60
+        if is_job_posting and any(title in pos_lower for title in ENG_LEADERSHIP_TITLES):
+            score += 45
+        elif not is_job_posting and any(t in pos_lower for t in ("founder", "co-founder", "ceo", "cto")):
+            score += 30
         if (entry.get("seniority") or "").lower() == "executive":
             score += 35
         if (entry.get("department") or "").lower() in ("executive", "it", "management"):
@@ -431,6 +450,7 @@ async def research_contact(
     company_data: EnrichedCompanyData,
     target_person: Optional[str] = None,
     pattern_success_rates: Optional[Dict[str, float]] = None,
+    opportunity_type: str = "founder_reachout",
 ) -> ContactInfoResult:
     """Multi-tiered contact research engine: Hunter.io (Primary) -> Website Scraper ->
     Precision Dorks + LLM Extraction -> Hunter Email Finder -> Apollo -> Verified Pattern Generator -> Role-based Inbox."""
@@ -459,7 +479,11 @@ async def research_contact(
 
     # 2. Tier 1 (Primary): Hunter.io domain-search & email-finder
     hunter_emails = await lookup_hunter_domain_search(domain) if domain else []
-    best_hunter = _pick_best_hunter_contact(hunter_emails, target_person=known_founder)
+    best_hunter = _pick_best_hunter_contact(
+        hunter_emails,
+        target_person=known_founder,
+        opportunity_type=opportunity_type,
+    )
     if best_hunter and best_hunter.email:
         logger.info(
             f"Hunter.io primary match for {clean_company}: {best_hunter.name} <{best_hunter.email}>"

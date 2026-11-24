@@ -11,7 +11,7 @@ import uvicorn
 from backup import create_database_backup
 from bot.telegram_bot import TelegramBotController
 from config import settings
-from db.database import get_system_stats, init_db
+from db.database import apply_persisted_settings, get_system_stats, init_db
 from discovery.manager import DiscoveryManager
 from heartbeat import run_anti_idle_pulse
 from scheduler import OutreachScheduler
@@ -56,6 +56,7 @@ async def lifespan(app: FastAPI):
     global bot_controller, scheduler_instance, telegram_app
     logger.info("Initializing SQLite database...")
     init_db()
+    apply_persisted_settings()
 
     # Initialize Telegram Bot (if token configured and not placeholder)
     if settings.TELEGRAM_BOT_TOKEN and not settings.TELEGRAM_BOT_TOKEN.startswith("your_"):

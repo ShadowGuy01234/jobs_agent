@@ -54,6 +54,13 @@ def _run_migrations(db_path: Optional[Path] = None) -> None:
         cursor = conn.cursor()
         migrations = [
             "ALTER TABLE contacts ADD COLUMN pattern_used TEXT",
+            """
+            CREATE TABLE IF NOT EXISTS app_settings (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            """,
         ]
         for stmt in migrations:
             try:
@@ -284,6 +291,81 @@ def save_or_update_contact(
         )
         conn.commit()
         return cursor.lastrowid
+
+
+def get_verified_company_contact(
+    company_id: int, db_path: Optional[Path] = None
+) -> Optional[Dict[str, Any]]:
+    """Return an existing verified personal contact for a company so we never re-spend Hunter credits."""
+    with get_db_connection(db_path) as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT id, name, title, email, email_confidence, linkedin_url, twitter_url, pattern_used
+            FROM contacts
+            WHERE company_id = ?
+              AND email IS NOT NULL
+              AND email_confidence IN ('verified', 'manual')
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            (company_id,),
+        )
+        row = cursor.fetchone()
+        return dict(row) if row else None
+
+
+def get_known_company_domains(db_path: Optional[Path] = None) -> set[str]:
+    """Return lowercase known company domains from SQLite for pre-scrape deduplication."""
+    with get_db_connection(db_path) as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT LOWER(domain) FROM companies WHERE domain IS NOT NULL")
+        return {row[0] for row in cursor.fetchall() if row[0]}
+
+
+def get_app_setting(
+    key: str, default: Optional[str] = None, db_path: Optional[Path] = None
+) -> Optional[str]:
+    """Read a persisted runtime setting from SQLite."""
+    with get_db_connection(db_path) as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT value FROM app_settings WHERE key = ?", (key,))
+        row = cursor.fetchone()
+        return row["value"] if row else default
+
+
+def set_app_setting(
+    key: str, value: str, db_path: Optional[Path] = None
+) -> None:
+    """Persist a runtime setting in SQLite across restarts and deploys."""
+    with get_db_connection(db_path) as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            INSERT INTO app_settings (key, value, updated_at)
+            VALUES (?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(key) DO UPDATE SET
+                value = excluded.value,
+                updated_at = CURRENT_TIMESTAMP
+            """,
+            (key, str(value)),
+        )
+        conn.commit()
+
+
+def apply_persisted_settings(db_path: Optional[Path] = None) -> None:
+    """Restore persisted runtime overrides (DRY_RUN, MIN_FIT_SCORE) onto global settings."""
+    dry_run_val = get_app_setting("dry_run", db_path=db_path)
+    if dry_run_val is not None:
+        settings.DRY_RUN = dry_run_val.lower() in ("1", "true", "yes", "on")
+    min_score_val = get_app_setting("min_fit_score", db_path=db_path)
+    if min_score_val is not None:
+        try:
+            parsed = int(min_score_val)
+            if 0 <= parsed <= 100:
+                settings.MIN_FIT_SCORE = parsed
+        except ValueError:
+            pass
 
 
 def update_contact_email(
@@ -663,14 +745,23 @@ def get_pending_approval_opportunities(
 def get_unscored_opportunity_ids(
     limit: int = 10, db_path: Optional[Path] = None
 ) -> List[int]:
-    """Retrieve opportunity IDs that are in 'discovered' status and need scoring."""
+    """Retrieve 'discovered' opportunity IDs, prioritizing active roles and high-signal sources."""
     with get_db_connection(db_path) as conn:
         cursor = conn.cursor()
         cursor.execute(
             """
-            SELECT id FROM opportunities
-            WHERE status = 'discovered'
-            ORDER BY id ASC
+            SELECT o.id
+            FROM opportunities o
+            JOIN companies c ON o.company_id = c.id
+            WHERE o.status = 'discovered'
+            ORDER BY
+                CASE
+                    WHEN o.type = 'job_posting' THEN 0
+                    WHEN c.source IN ('hunter_discover', 'yc_directory', 'hn_hiring', 'github_trending') THEN 1
+                    WHEN c.source = 'sec_edgar' THEN 3
+                    ELSE 2
+                END ASC,
+                o.id DESC
             LIMIT ?
             """,
             (limit,),

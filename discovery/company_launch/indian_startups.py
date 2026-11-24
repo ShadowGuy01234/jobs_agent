@@ -31,7 +31,14 @@ class IndianStartupsConnector(BaseDiscoveryConnector):
                     title = entry.get("title", "")
                     # Look for funding / launch / seed announcements in Indian tech news
                     lower_title = title.lower()
-                    if not any(k in lower_title for k in ["raises", "secures", "funding", "seed", "series a", "launches", "backed"]):
+                    # Skip macro industry roundup articles that are not about a specific startup
+                    if any(noise in lower_title for noise in [
+                        "funding report", "nearly doubles", "total funding", "funding boom",
+                        "top 10", "top 5", "this week", "year in review", "startup ecosystem",
+                        "india ai funding", "funding in ",
+                    ]):
+                        continue
+                    if not any(k in lower_title for k in ["raises", "secures", "bags", "closes", "seed", "series a"]):
                         continue
 
                     link = entry.get("link", "")
@@ -40,11 +47,13 @@ class IndianStartupsConnector(BaseDiscoveryConnector):
 
                     # Extract company name from headline (e.g. "AI startup Sarvam raises $41M" or "Krutrim secures seed")
                     words = title.split()
-                    company_name = "Indian Tech Startup"
+                    company_name = ""
                     for idx, w in enumerate(words):
                         if w.lower() in ["raises", "secures", "bags", "gets", "closes"] and idx > 0:
                             company_name = " ".join(words[:idx]).replace("Startup", "").replace("AI startup", "").replace("Fintech", "").strip()
                             break
+                    if not company_name or len(company_name.split()) > 6:
+                        continue
 
                     company_info = CompanyInfo(
                         name=company_name,

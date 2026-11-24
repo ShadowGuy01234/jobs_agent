@@ -106,6 +106,12 @@ CREATE TABLE IF NOT EXISTS audit_log (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS app_settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
 -- Indices for performance & deduplication
 CREATE INDEX IF NOT EXISTS idx_companies_domain ON companies(domain);
 CREATE INDEX IF NOT EXISTS idx_opportunities_url ON opportunities(url);

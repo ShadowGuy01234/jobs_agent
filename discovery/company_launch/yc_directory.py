@@ -85,7 +85,14 @@ class YCDirectoryConnector(BaseDiscoveryConnector):
                         logger.warning(f"Error fetching YC batch {batch_slug}: {e}")
                         continue
 
-                    for hit in companies:
+                    # Prioritize companies actively hiring and aligned with AI/DevTools/Infra
+                    def _yc_rank(c: dict) -> tuple:
+                        tags_l = " ".join(c.get("tags") or []).lower()
+                        text_l = f"{c.get('one_liner', '')} {tags_l}".lower()
+                        has_ai_dev = any(k in text_l for k in ("ai", "agent", "llm", "developer", "infra", "devops", "cloud", "api"))
+                        return (1 if c.get("isHiring") else 0, 1 if has_ai_dev else 0)
+
+                    for hit in sorted(companies, key=_yc_rank, reverse=True):
                         name = (hit.get("name") or "").strip()
                         if not name or hit.get("status") == "Inactive":
                             continue

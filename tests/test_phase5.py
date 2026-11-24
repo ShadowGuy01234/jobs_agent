@@ -88,3 +88,54 @@ def test_bot_authorization():
     """Test bot authorization check against chat ID."""
     bot = TelegramBotController(token="123456:dummy", authorized_chat_id="998877")
     assert bot.authorized_chat_id == "998877"
+
+
+@pytest.mark.asyncio
+async def test_approve_callback_forwards_email_and_distinguishes_dry_run(tmp_path, monkeypatch):
+    """Approve callback passes updated SQLite contact email and clearly labels DRY_RUN vs live sends."""
+    from unittest.mock import AsyncMock, MagicMock
+    from config import settings
+    from db.database import (
+        get_or_create_company,
+        init_db,
+        save_draft,
+        save_opportunity,
+        save_or_update_contact,
+    )
+    import bot.telegram_bot as tb
+
+    db_path = tmp_path / "bot_test.db"
+    init_db(db_path)
+    monkeypatch.setattr(settings, "DATABASE_PATH", db_path)
+
+    cid = get_or_create_company(domain="acme.ai", name="Acme AI", db_path=db_path)
+    oid = save_opportunity(cid, "founder_reachout", "Acme AI", "https://acme.ai", db_path=db_path)
+    contact_id = save_or_update_contact(
+        cid, "Jane Doe", email="jane@acme.ai", email_confidence="verified", db_path=db_path
+    )
+    save_draft(oid, contact_id, subject="Quick note", body="Draft body", db_path=db_path)
+
+    bot = TelegramBotController(token="123456:dummy", authorized_chat_id="998877")
+    resume_mock = AsyncMock(return_value={"is_sent": True, "contact_email": "jane@acme.ai"})
+    monkeypatch.setattr(bot.orchestrator, "resume_opportunity", resume_mock)
+
+    query = MagicMock()
+    query.edit_message_reply_markup = AsyncMock()
+    query.message.reply_text = AsyncMock()
+
+    orig_dry = settings.DRY_RUN
+    try:
+        settings.DRY_RUN = True
+        await bot._route_callback_query(query, f"approve_{oid}", "998877")
+        assert resume_mock.await_args.kwargs["provided_email"] == "jane@acme.ai"
+        last_text = query.message.reply_text.await_args_list[-1].args[0]
+        assert "DRY-RUN" in last_text
+        assert "jane@acme.ai" in last_text
+
+        settings.DRY_RUN = False
+        await bot._route_callback_query(query, f"approve_{oid}", "998877")
+        last_text_live = query.message.reply_text.await_args_list[-1].args[0]
+        assert "Live Email Sent" in last_text_live
+        assert "jane@acme.ai" in last_text_live
+    finally:
+        settings.DRY_RUN = orig_dry

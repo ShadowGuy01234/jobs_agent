@@ -18,7 +18,6 @@ from typing import Dict, Iterable, List, Optional
 import httpx
 
 from config import settings
-from discovery.company_launch.yc_directory import fetch_recent_batches
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +48,23 @@ def load_cached_tokens() -> Dict[str, List[str]]:
 def save_cached_tokens(tokens: Dict[str, List[str]]) -> None:
     CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
     CACHE_PATH.write_text(json.dumps(tokens, indent=2, sort_keys=True), encoding="utf-8")
+
+
+def register_discovered_board_tokens(found: Dict[str, List[str]]) -> int:
+    """Merge newly discovered ATS slugs into board_tokens.json; return count of new slugs added."""
+    cache = load_cached_tokens()
+    added = 0
+    for provider, slugs in found.items():
+        if provider not in PROBE_URLS or not slugs:
+            continue
+        existing = set(cache.get(provider, []))
+        new_slugs = [s.lower().strip() for s in slugs if s and s.lower().strip() not in existing]
+        if new_slugs:
+            cache[provider] = sorted(existing | set(new_slugs))
+            added += len(new_slugs)
+    if added:
+        save_cached_tokens(cache)
+    return added
 
 
 def merge_board_tokens(provider: str, configured: Optional[Iterable[str]]) -> Optional[List[str]]:
@@ -104,6 +120,8 @@ async def _probe(client: httpx.AsyncClient, provider: str, token: str) -> bool:
 
 async def fetch_yc_company_names(batch_count: int = 6) -> List[str]:
     """Pull company names from the same free YC mirror the yc_directory connector uses."""
+    from discovery.company_launch.yc_directory import fetch_recent_batches
+
     names: List[str] = []
     async with httpx.AsyncClient(timeout=20.0, follow_redirects=True) as client:
         try:

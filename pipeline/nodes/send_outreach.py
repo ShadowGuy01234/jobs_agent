@@ -1,5 +1,6 @@
 """Email dispatch node using Gmail SMTP with dry-run support and SQLite tracking."""
 
+import asyncio
 import email.message
 import logging
 from pathlib import Path
@@ -99,7 +100,8 @@ async def execute_outreach_send(state: OpportunityPipelineState) -> OpportunityP
             logger.warning(state.error_message)
             return state
         try:
-            send_email_via_smtp(
+            await asyncio.to_thread(
+                send_email_via_smtp,
                 to_email=recipient,
                 subject=subject,
                 body=body,

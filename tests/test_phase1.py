@@ -176,3 +176,49 @@ def test_profile_and_resume_loading():
     resume_text = load_resume_text()
     assert resume_text is not None
     assert len(resume_text.strip()) > 0
+
+
+def test_app_settings_contact_cache_and_backlog_priority(temp_db, monkeypatch):
+    """Test persisted app_settings, verified contact reuse, and backlog prioritization."""
+    from config import settings
+    from db.database import (
+        apply_persisted_settings,
+        get_app_setting,
+        get_unscored_opportunity_ids,
+        get_verified_company_contact,
+        set_app_setting,
+    )
+
+    orig_dry = settings.DRY_RUN
+    orig_score = settings.MIN_FIT_SCORE
+    try:
+        set_app_setting("dry_run", "false", db_path=temp_db)
+        set_app_setting("min_fit_score", "82", db_path=temp_db)
+        assert get_app_setting("dry_run", db_path=temp_db) == "false"
+        apply_persisted_settings(db_path=temp_db)
+        assert settings.DRY_RUN is False
+        assert settings.MIN_FIT_SCORE == 82
+    finally:
+        settings.DRY_RUN = orig_dry
+        settings.MIN_FIT_SCORE = orig_score
+
+    c_sec = get_or_create_company(domain=None, name="Holding LLC", source="sec_edgar", db_path=temp_db)
+    c_hd = get_or_create_company(domain="acme.ai", name="Acme AI", source="hunter_discover", db_path=temp_db)
+    opp_sec = save_opportunity(c_sec, "stealth_reachout", "Holding LLC Form D", "https://sec.gov/1", db_path=temp_db)
+    opp_hd = save_opportunity(c_hd, "founder_reachout", "Acme AI", "https://acme.ai", db_path=temp_db)
+    opp_job = save_opportunity(c_hd, "job_posting", "AI Engineer", "https://acme.ai/jobs/1", db_path=temp_db)
+
+    ordered = get_unscored_opportunity_ids(limit=10, db_path=temp_db)
+    assert ordered[0] == opp_job
+    assert ordered[1] == opp_hd
+    assert ordered[-1] == opp_sec
+
+    # Unverified contact should not be returned as cached verified contact
+    save_or_update_contact(c_hd, "Alex", email="alex@acme.ai", email_confidence="low_confidence", db_path=temp_db)
+    assert get_verified_company_contact(c_hd, db_path=temp_db) is None
+
+    # Verified contact is reusable across repeat postings
+    save_or_update_contact(c_hd, "Alex", email="alex@acme.ai", email_confidence="verified", db_path=temp_db)
+    cached = get_verified_company_contact(c_hd, db_path=temp_db)
+    assert cached is not None
+    assert cached["email"] == "alex@acme.ai"

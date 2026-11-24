@@ -9,6 +9,7 @@ from langgraph.types import interrupt
 from config import settings
 from db.database import (
     get_pattern_success_rates,
+    get_verified_company_contact,
     record_pattern_attempt,
     save_draft,
     save_evaluation,
@@ -124,6 +125,22 @@ async def node_filter_out(state: OpportunityPipelineState) -> Dict[str, Any]:
 async def node_research(state: OpportunityPipelineState) -> Dict[str, Any]:
     """Node 3: Discover founder/HM, LinkedIn URL, and verified email."""
     db_path = Path(state.db_path) if state.db_path else None
+
+    cached = get_verified_company_contact(state.company_id, db_path=db_path)
+    if cached:
+        logger.info(
+            f"Reusing cached verified contact for company [{state.company_id}] "
+            f"{state.company_name}: {cached['email']}"
+        )
+        return {
+            "contact_id": cached["id"],
+            "contact_name": cached["name"],
+            "contact_title": cached["title"],
+            "contact_email": cached["email"],
+            "email_confidence": cached["email_confidence"],
+            "linkedin_url": cached["linkedin_url"],
+        }
+
     company_data = EnrichedCompanyData(
         name=state.company_name,
         domain=state.company_domain,
@@ -135,7 +152,9 @@ async def node_research(state: OpportunityPipelineState) -> Dict[str, Any]:
 
     pattern_success_rates = get_pattern_success_rates(db_path=db_path)
     contact_res: ContactInfoResult = await research_contact(
-        company_data, pattern_success_rates=pattern_success_rates
+        company_data,
+        pattern_success_rates=pattern_success_rates,
+        opportunity_type=state.opportunity_type,
     )
 
     if contact_res.pattern_used:

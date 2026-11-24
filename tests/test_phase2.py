@@ -199,6 +199,62 @@ async def test_hunter_discover_connector_mock(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_github_trending_connector_mock(monkeypatch):
+    """Test GitHubTrendingConnector extracts startup orgs and skips awesome-list noise."""
+    from unittest.mock import MagicMock
+    import httpx
+    from discovery.company_launch.github_trending import GitHubTrendingConnector
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def get(self, url, **kwargs):
+            resp = MagicMock()
+            resp.status_code = 200
+            resp.json.return_value = {
+                "items": [
+                    {
+                        "id": 1,
+                        "name": "awesome-ai-agents",
+                        "full_name": "user/awesome-ai-agents",
+                        "homepage": "https://example.com",
+                        "stargazers_count": 5000,
+                        "owner": {"login": "user", "type": "User"},
+                    },
+                    {
+                        "id": 2,
+                        "name": "agent-runtime",
+                        "full_name": "acme-ai/agent-runtime",
+                        "homepage": "https://acme-ai.dev",
+                        "description": "Fast Rust/Python agent runtime",
+                        "language": "Python",
+                        "topics": ["ai-agents", "langgraph"],
+                        "stargazers_count": 820,
+                        "html_url": "https://github.com/acme-ai/agent-runtime",
+                        "owner": {"login": "acme-ai", "type": "Organization"},
+                    },
+                ]
+            }
+            return resp
+
+    monkeypatch.setattr(httpx, "AsyncClient", FakeClient)
+
+    connector = GitHubTrendingConnector()
+    opps = await connector.fetch_opportunities(limit=5)
+    assert len(opps) == 1
+    assert opps[0].source == DiscoverySource.GITHUB_TRENDING
+    assert opps[0].company.domain == "acme-ai.dev"
+    assert opps[0].company.name == "acme-ai"
+
+
+@pytest.mark.asyncio
 async def test_remote_boards_isolates_failing_feed(monkeypatch):
     """One failing/timing-out feed must not block results from healthy remote feeds."""
     from discovery.job_boards.remote_boards import RemoteBoardsConnector

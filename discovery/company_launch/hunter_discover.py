@@ -9,7 +9,9 @@ from typing import Any, Dict, List, Optional
 import httpx
 
 from config import settings
+from db.database import get_app_setting, get_known_company_domains, set_app_setting
 from discovery.base import BaseDiscoveryConnector
+from discovery.board_tokens import register_discovered_board_tokens
 from discovery.models import CompanyInfo, DiscoverySource, OpportunityType, RawOpportunity
 
 logger = logging.getLogger(__name__)
@@ -21,11 +23,15 @@ DEFAULT_INDUSTRIES = [
     "Technology, Information and Internet",
 ]
 
-DEFAULT_KEYWORD_BATCHES: List[List[str]] = [
-    ["AI", "agent", "LLM"],
-    ["developer", "devtools", "infrastructure"],
-    ["API", "cloud", "backend"],
-    ["vision", "robotics", "edge"],
+DEFAULT_PRESETS: List[Dict[str, Any]] = [
+    {"keywords": ["AI", "agent", "LLM"], "headcount": ["1-10", "11-50"], "label": "AI & Agents"},
+    {"keywords": ["developer", "devtools", "infrastructure"], "headcount": ["1-10", "11-50"], "label": "DevTools & Infra"},
+    {"keywords": ["API", "cloud", "backend"], "headcount": ["1-10", "11-50"], "label": "Cloud & APIs"},
+    {"keywords": ["vision", "robotics", "edge"], "headcount": ["1-10", "11-50"], "label": "Vision & Edge AI"},
+    {"keywords": ["AI", "SaaS", "software"], "headcount": ["1-10", "11-50", "51-200"], "countries": ["India"], "label": "India Tech Startups"},
+    {"keywords": ["AI", "platform", "automation"], "headcount": ["11-50", "51-200"], "countries": ["United States"], "label": "US Seed/Series A"},
+    {"keywords": ["security", "observability", "data"], "headcount": ["1-10", "11-50"], "label": "Data & Security"},
+    {"keywords": ["machine learning", "vector", "rag"], "headcount": ["1-10", "11-50", "51-200"], "label": "ML Infra"},
 ]
 
 _TITLE_RE = re.compile(r"<title[^>]*>(.*?)</title>", re.IGNORECASE | re.DOTALL)
@@ -38,10 +44,15 @@ _META_DESC_ALT_RE = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 _CAREERS_LINK_RE = re.compile(r'href=["\']([^"\']*(?:careers|jobs)[^"\']*)["\']', re.IGNORECASE)
+_ATS_PATTERNS = {
+    "ashby": re.compile(r"https?://jobs\.ashbyhq\.com/([a-z0-9][a-z0-9_-]{1,60})", re.IGNORECASE),
+    "greenhouse": re.compile(r"https?://(?:boards|job-boards)\.greenhouse\.io/([a-z0-9][a-z0-9_-]{1,60})", re.IGNORECASE),
+    "lever": re.compile(r"https?://jobs\.lever\.co/([a-z0-9][a-z0-9_-]{1,60})", re.IGNORECASE),
+}
 
 
-def _extract_site_summary(html_text: str) -> tuple[str, Optional[str]]:
-    """Extract clean page title/meta description and optional careers link from homepage HTML."""
+def _extract_site_summary(html_text: str) -> tuple[str, Optional[str], Dict[str, List[str]]]:
+    """Extract page title/meta description, careers link, and any embedded ATS board slugs."""
     title_match = _TITLE_RE.search(html_text)
     desc_match = _META_DESC_RE.search(html_text) or _META_DESC_ALT_RE.search(html_text)
     careers_match = _CAREERS_LINK_RE.search(html_text)
@@ -57,7 +68,13 @@ def _extract_site_summary(html_text: str) -> tuple[str, Optional[str]]:
             parts.append(desc_txt)
 
     careers_href = careers_match.group(1).strip() if careers_match else None
-    return " — ".join(parts)[:600], careers_href
+    ats_hits: Dict[str, List[str]] = {}
+    for provider, pat in _ATS_PATTERNS.items():
+        slugs = list(dict.fromkeys(m.lower() for m in pat.findall(html_text)))
+        if slugs:
+            ats_hits[provider] = slugs
+
+    return " — ".join(parts)[:600], careers_href, ats_hits
 
 
 class HunterDiscoverConnector(BaseDiscoveryConnector):
@@ -68,20 +85,33 @@ class HunterDiscoverConnector(BaseDiscoveryConnector):
     def __init__(
         self,
         api_key: Optional[str] = None,
-        keyword_batches: Optional[List[List[str]]] = None,
-        headcounts: Optional[List[str]] = None,
+        presets: Optional[List[Dict[str, Any]]] = None,
         industries: Optional[List[str]] = None,
+        use_persisted_cursor: bool = True,
     ):
         self.api_key = api_key if api_key is not None else settings.HUNTER_API_KEY
-        self.keyword_batches = keyword_batches or DEFAULT_KEYWORD_BATCHES
-        self.headcounts = headcounts or ["1-10", "11-50"]
+        self.presets = presets or DEFAULT_PRESETS
         self.industries = industries or DEFAULT_INDUSTRIES
+        self.use_persisted_cursor = use_persisted_cursor and api_key is None
         self._batch_index = 0
+
+    def _next_preset(self) -> Dict[str, Any]:
+        idx = self._batch_index
+        if self.use_persisted_cursor:
+            try:
+                saved = get_app_setting("hunter_discover_cursor")
+                if saved is not None:
+                    idx = int(saved)
+                set_app_setting("hunter_discover_cursor", str((idx + 1) % len(self.presets)))
+            except Exception as e:
+                logger.debug(f"Could not read/write hunter_discover_cursor: {e}")
+        self._batch_index = idx + 1
+        return self.presets[idx % len(self.presets)]
 
     async def _enrich_homepage(
         self, client: httpx.AsyncClient, sem: asyncio.Semaphore, domain: str
-    ) -> tuple[str, Optional[str]]:
-        """Best-effort fetch of homepage title/description and careers hint."""
+    ) -> tuple[str, Optional[str], Dict[str, List[str]]]:
+        """Best-effort fetch of homepage title/description, careers hint, and ATS board links."""
         async with sem:
             try:
                 resp = await client.get(f"https://{domain}", timeout=5.0)
@@ -89,24 +119,35 @@ class HunterDiscoverConnector(BaseDiscoveryConnector):
                     return _extract_site_summary(resp.text)
             except Exception:
                 pass
-        return "", None
+        return "", None, {}
 
     async def fetch_opportunities(self, limit: int = 20) -> List[RawOpportunity]:
         if not self.api_key:
             logger.info("HUNTER_API_KEY not configured. Skipping Hunter Discover.")
             return []
 
-        keywords = self.keyword_batches[self._batch_index % len(self.keyword_batches)]
-        self._batch_index += 1
+        preset = self._next_preset()
+        keywords: List[str] = preset["keywords"]
+        headcounts: List[str] = preset.get("headcount", ["1-10", "11-50"])
+        countries: Optional[List[str]] = preset.get("countries")
 
         payload: Dict[str, Any] = {
             "industry": {"include": self.industries},
-            "headcount": self.headcounts,
+            "headcount": headcounts,
             "keywords": {"include": keywords},
-            "limit": min(max(limit * 2, 10), 100),
+            "limit": min(max(limit * 3, 25), 100),
         }
+        if countries:
+            payload["headquarters_location"] = {"include": countries}
 
         try:
+            known_domains: set[str] = set()
+            if self.use_persisted_cursor:
+                try:
+                    known_domains = get_known_company_domains()
+                except Exception:
+                    known_domains = set()
+
             async with httpx.AsyncClient(
                 timeout=15.0,
                 follow_redirects=True,
@@ -124,24 +165,38 @@ class HunterDiscoverConnector(BaseDiscoveryConnector):
                     return []
 
                 rows = resp.json().get("data", [])
-                # Prefer companies that actually have personal emails indexed in Hunter
+                # Prefer unseen companies that have personal emails indexed in Hunter
                 candidates = [
                     r
                     for r in rows
                     if r.get("domain")
+                    and r["domain"].lower().strip() not in known_domains
                     and (r.get("emails_count") or {}).get("personal", 0) > 0
                 ]
                 if not candidates:
-                    candidates = [r for r in rows if r.get("domain")]
+                    candidates = [
+                        r
+                        for r in rows
+                        if r.get("domain") and r["domain"].lower().strip() not in known_domains
+                    ]
                 candidates = candidates[:limit]
+                if not candidates:
+                    return []
 
                 sem = asyncio.Semaphore(5)
                 summaries = await asyncio.gather(
                     *(self._enrich_homepage(client, sem, r["domain"]) for r in candidates)
                 )
 
+                discovered_ats: Dict[str, List[str]] = {}
+                stage = "series_a" if headcounts == ["51-200"] else "seed"
+                country_label = ", ".join(countries) if countries else "Remote"
+
                 opportunities: List[RawOpportunity] = []
-                for item, (site_summary, careers_href) in zip(candidates, summaries):
+                for item, (site_summary, careers_href, ats_hits) in zip(candidates, summaries):
+                    for prov, slugs in ats_hits.items():
+                        discovered_ats.setdefault(prov, []).extend(slugs)
+
                     domain = item["domain"].lower().strip()
                     org_name = (item.get("organization") or domain).strip()
                     emails_count = item.get("emails_count") or {}
@@ -149,7 +204,7 @@ class HunterDiscoverConnector(BaseDiscoveryConnector):
                     total_cnt = emails_count.get("total", 0)
                     website = f"https://{domain}"
                     desc = site_summary or (
-                        f"{org_name} ({domain}) — discovered via Hunter.io ({', '.join(keywords)})."
+                        f"{org_name} ({domain}) — discovered via Hunter.io ({preset.get('label', ', '.join(keywords))})."
                     )
                     careers_note = f" Careers page detected: {careers_href}." if careers_href else ""
 
@@ -157,11 +212,11 @@ class HunterDiscoverConnector(BaseDiscoveryConnector):
                         name=org_name,
                         domain=domain,
                         website=website,
-                        stage="seed",
+                        stage=stage,
                         description=desc[:400],
                         tech_stack=list(keywords),
                         funding_info=f"Hunter Discover ({personal_cnt} personal / {total_cnt} emails)",
-                        country="Remote",
+                        country=country_label,
                         is_stealth=False,
                     )
 
@@ -172,16 +227,26 @@ class HunterDiscoverConnector(BaseDiscoveryConnector):
                         url=website,
                         company=company_info,
                         external_id=domain,
-                        location="Remote",
+                        location=country_label,
                         is_remote=True,
                         raw_content=f"{desc}{careers_note}".strip(),
                         metadata={
+                            "preset": preset.get("label"),
                             "keywords": keywords,
                             "emails_count": emails_count,
                             "careers_href": careers_href,
+                            "ats_boards": ats_hits,
                         },
                     )
                     opportunities.append(opp)
+
+                if discovered_ats and self.use_persisted_cursor:
+                    try:
+                        added = register_discovered_board_tokens(discovered_ats)
+                        if added:
+                            logger.info(f"Hunter Discover harvested {added} new ATS board token(s): {discovered_ats}")
+                    except Exception as e:
+                        logger.debug(f"Could not save harvested ATS tokens: {e}")
 
                 return opportunities[:limit]
         except Exception as e:

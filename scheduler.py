@@ -33,12 +33,14 @@ from pipeline.orchestrator import PipelineOrchestrator
 
 logger = logging.getLogger(__name__)
 
-# Complete list of discovery connectors to rotate through (Hunter Discover is primary)
+# Complete list of discovery connectors to rotate through (Hunter Discover is primary;
+# sec_edgar remains available manually via /discover sec_edgar so low-signal Form Ds do not clog backlog)
 ROTATING_SOURCES: List[str] = [
     "hunter_discover",
     "yc",
     "hn_hiring",
     "ashby",
+    "github_trending",
     "remote_boards",
     "greenhouse",
     "hackernews",
@@ -47,7 +49,6 @@ ROTATING_SOURCES: List[str] = [
     "tavily_stealth",
     "lever",
     "vc_stealth",
-    "sec_edgar",
     "watchlist",
 ]
 
@@ -107,12 +108,19 @@ class OutreachScheduler:
                 f"Hourly discovery ({', '.join(sources_to_run)}): {len(new_ids)} new opportunities ingested."
             )
 
-            # 2. Select IDs to evaluate (new IDs + unscored backlog up to batch limit)
-            limit_to_process = new_ids[: settings.MAX_ALERTS_PER_DAY]
-            if not limit_to_process:
-                backlog_ids = get_unscored_opportunity_ids(limit=5)
-                if backlog_ids:
-                    limit_to_process = backlog_ids
+            # 2. Select IDs to evaluate (new IDs topped up from prioritized unscored backlog)
+            batch_cap = min(8, max(5, settings.MAX_ALERTS_PER_DAY))
+            limit_to_process = list(new_ids[:batch_cap])
+            if len(limit_to_process) < batch_cap:
+                needed = batch_cap - len(limit_to_process)
+                backlog_ids = get_unscored_opportunity_ids(limit=needed + len(limit_to_process))
+                seen = set(limit_to_process)
+                for bid in backlog_ids:
+                    if bid not in seen:
+                        limit_to_process.append(bid)
+                        seen.add(bid)
+                    if len(limit_to_process) >= batch_cap:
+                        break
 
             alerts_sent = 0
             evaluated_count = len(limit_to_process)

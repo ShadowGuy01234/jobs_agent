@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 
 class DiscoverySource(str, Enum):
     HUNTER_DISCOVER = "hunter_discover"
+    GITHUB_TRENDING = "github_trending"
     ASHBY = "ashby"
     GREENHOUSE = "greenhouse"
     LEVER = "lever"

@@ -28,12 +28,12 @@ class ProductHuntConnector(BaseDiscoveryConnector):
                 clean_summary = BeautifulSoup(summary_html, "html.parser").get_text(separator="\n").strip() if summary_html else ""
 
                 # Extract company name from title (e.g. "Cursor - AI code editor")
+                # Leave domain=None so resolve_company_domain finds the true domain (.ai/.io/.dev/etc.)
                 company_name = title.split("-")[0].split("—")[0].split(":")[0].strip()
-                domain = f"{company_name.lower().replace(' ', '')}.com"
 
                 company_info = CompanyInfo(
                     name=company_name,
-                    domain=domain,
+                    domain=None,
                     website=link,
                     stage="pre_seed",
                     source="Product Hunt",

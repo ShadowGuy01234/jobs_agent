@@ -25,6 +25,7 @@ from db.database import (
     get_system_stats,
     log_audit,
     record_pattern_success,
+    set_app_setting,
     update_contact_email,
     update_draft_body,
     update_follow_up_status,
@@ -252,7 +253,7 @@ class TelegramBotController:
             "• <code>/status</code> — View discovery & outreach metrics\n"
             "• <code>/profile</code> — View your profile & targeting criteria\n"
             "• <code>/discover [source]</code> — Trigger on-demand discovery (e.g. <code>/discover hunter_discover</code>)\n"
-            "• <code>/sources</code> — List all 14 discovery connectors\n"
+            "• <code>/sources</code> — List all 15 discovery connectors\n"
             "• <code>/set min_score [number]</code> — Update minimum fit score (e.g. <code>/set min_score 80</code>)\n"
             "• <code>/dry_run [on|off]</code> — Toggle dry-run email sending mode\n"
             "• <code>/logs</code> — View recent diagnostic logs for debugging\n"
@@ -344,6 +345,7 @@ class TelegramBotController:
             "<b>Track B (Early Startups, Launches & Stealth):</b>\n"
             "• <code>yc</code> — Y Combinator (4 most recent batches)\n"
             "• <code>hn_hiring</code> — Hacker News monthly Who Is Hiring thread\n"
+            "• <code>github_trending</code> — Fast-growing AI &amp; DevTools GitHub orgs\n"
             "• <code>producthunt</code> — Product Hunt trending maker launches\n"
             "• <code>hackernews</code> — Hacker News Launch HN & Show HN\n"
             "• <code>india</code> — Indian startup funding news (Inc42, Entrackr, YourStory)\n"
@@ -534,7 +536,8 @@ class TelegramBotController:
                     await update.message.reply_text("⚠️ Score must be between 0 and 100.")
                     return
                 settings.MIN_FIT_SCORE = parsed
-                await update.message.reply_text(f"✅ Minimum fit score updated to {settings.MIN_FIT_SCORE}")
+                set_app_setting("min_fit_score", str(parsed))
+                await update.message.reply_text(f"✅ Minimum fit score updated to {settings.MIN_FIT_SCORE} (saved)")
             except ValueError:
                 await update.message.reply_text("⚠️ Score must be an integer (0-100).")
         else:
@@ -548,10 +551,12 @@ class TelegramBotController:
         args = context.args or []
         if args and args[0].lower() in ["off", "false", "live"]:
             settings.DRY_RUN = False
-            await update.message.reply_text("🟢 DRY-RUN mode disabled. Live emails will be dispatched via Gmail SMTP.")
+            set_app_setting("dry_run", "false")
+            await update.message.reply_text("🟢 DRY-RUN mode disabled (saved). Live emails will be dispatched via Gmail SMTP.")
         else:
             settings.DRY_RUN = True
-            await update.message.reply_text("🟡 DRY-RUN mode enabled. Emails will be logged without real dispatch.")
+            set_app_setting("dry_run", "true")
+            await update.message.reply_text("🟡 DRY-RUN mode enabled (saved). Emails will be simulated without real dispatch.")
 
     # ==========================================================================
     # 🔘 INLINE BUTTON CALLBACK HANDLERS
@@ -594,7 +599,7 @@ class TelegramBotController:
             # editing a draft via "Edit Draft" then tapping Approve would silently send the
             # original AI draft instead of the edited text, since node_human_gate only applies
             # edited_subject/edited_body from THIS resume payload, not from the drafts table.
-            edited_subject, edited_body = None, None
+            edited_subject, edited_body, provided_email = None, None, None
             with get_db_connection() as conn:
                 cursor = conn.cursor()
                 cursor.execute(
@@ -604,12 +609,39 @@ class TelegramBotController:
                 draft_row = cursor.fetchone()
                 if draft_row:
                     edited_subject, edited_body = draft_row["subject"], draft_row["body"]
+                cursor.execute(
+                    """
+                    SELECT ct.email FROM contacts ct
+                    JOIN opportunities o ON ct.company_id = o.company_id
+                    WHERE o.id = ? AND ct.email IS NOT NULL
+                    ORDER BY ct.id DESC LIMIT 1
+                    """,
+                    (opp_id,),
+                )
+                email_row = cursor.fetchone()
+                if email_row:
+                    provided_email = email_row["email"]
 
             result = await self.orchestrator.resume_opportunity(
-                opp_id, action="approve", edited_subject=edited_subject, edited_body=edited_body
+                opp_id,
+                action="approve",
+                edited_subject=edited_subject,
+                edited_body=edited_body,
+                provided_email=provided_email,
             )
             if result.get("is_sent"):
-                await query.message.reply_text(f"✅ <b>Approved & Sent!</b> (Opp #{opp_id})", parse_mode=ParseMode.HTML)
+                target = html.escape(str(provided_email or result.get("contact_email") or "recipient"))
+                if settings.DRY_RUN:
+                    await query.message.reply_text(
+                        f"🟡 <b>[DRY-RUN Simulated]</b> Approved (Opp #{opp_id}) for <code>{target}</code> — "
+                        "<b>no real email was sent</b>. Send <code>/dry_run off</code> to dispatch live emails.",
+                        parse_mode=ParseMode.HTML,
+                    )
+                else:
+                    await query.message.reply_text(
+                        f"✅ <b>Approved &amp; Live Email Sent!</b> (Opp #{opp_id}) to <code>{target}</code>",
+                        parse_mode=ParseMode.HTML,
+                    )
             else:
                 err = result.get("error_message", "Unknown error")
                 await query.message.reply_text(f"⚠️ <b>Sending Failed:</b> {err}", parse_mode=ParseMode.HTML)

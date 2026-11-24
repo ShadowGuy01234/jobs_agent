@@ -158,6 +158,35 @@ async def test_hunter_email_finder_fallback(monkeypatch):
     assert result.email_confidence == "verified"
 
 
+def test_hunter_job_posting_prefers_engineering_leadership():
+    """For job_posting opportunities, Hunter contact ranking prefers VP Eng/CTO over general CEO."""
+    from pipeline.nodes.research_contacts import _pick_best_hunter_contact
+
+    emails = [
+        {
+            "value": "ceo@bigstartup.io",
+            "type": "personal",
+            "first_name": "Pat",
+            "last_name": "Lee",
+            "position": "Chief Executive Officer",
+            "confidence": 90,
+            "verification": {"status": "valid"},
+        },
+        {
+            "value": "vp@bigstartup.io",
+            "type": "personal",
+            "first_name": "Sam",
+            "last_name": "Chen",
+            "position": "VP Engineering",
+            "confidence": 90,
+            "verification": {"status": "valid"},
+        },
+    ]
+    best = _pick_best_hunter_contact(emails, opportunity_type="job_posting")
+    assert best is not None
+    assert best.email == "vp@bigstartup.io"
+
+
 @pytest.mark.asyncio
 async def test_follow_up_bump_drafting():
     """Test 2-sentence follow-up bump drafting."""
