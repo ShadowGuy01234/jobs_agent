@@ -2,6 +2,7 @@
 
 import asyncio
 import html as html_lib
+import json
 import logging
 import re
 from typing import List, Optional, Tuple
@@ -10,6 +11,7 @@ from urllib.parse import urlparse
 import httpx
 from bs4 import BeautifulSoup
 
+from db.database import get_app_setting
 from discovery.base import BaseDiscoveryConnector
 from discovery.models import CompanyInfo, DiscoverySource, OpportunityType, RawOpportunity
 from pipeline.nodes.score_fit import check_title_relevance
@@ -207,14 +209,75 @@ def parse_telegram_channel_html(channel: str, html_text: str, limit: int = 10) -
     return opportunities
 
 
+def normalize_channel_handle(raw: str) -> Optional[str]:
+    """Normalize @handle or https://t.me/(s/)handle to a clean public handle.
+
+    Returns None for private invite links (t.me/+... or joinchat/...) or invalid strings.
+    """
+    val = (raw or "").strip()
+    if not val:
+        return None
+    val = re.sub(r"^https?://(?:www\.)?(?:t\.me|telegram\.me)/", "", val, flags=re.IGNORECASE)
+    if val.lower().startswith("s/"):
+        val = val[2:]
+    val = val.strip().lstrip("@").split("?")[0].strip("/")
+    if not val or val.startswith("+") or val.lower().startswith("joinchat"):
+        return None
+    if not re.match(r"^[A-Za-z0-9_]{3,64}$", val):
+        return None
+    return val
+
+
+def get_active_telegram_channels(fallback_channels: Optional[List[str]] = None) -> List[str]:
+    """Return active channel list (persisted bot additions/removals take precedence over YAML)."""
+    try:
+        raw = get_app_setting("telegram_channels")
+        if raw is not None:
+            loaded = json.loads(raw)
+            if isinstance(loaded, list):
+                cleaned = [normalize_channel_handle(c) for c in loaded]
+                return [c for c in cleaned if c]
+    except Exception as e:
+        logger.debug(f"Could not read persisted telegram_channels: {e}")
+
+    base = fallback_channels or DEFAULT_TELEGRAM_CHANNELS
+    cleaned = [normalize_channel_handle(c) for c in base]
+    return [c for c in cleaned if c]
+
+
+async def validate_public_channel(channel: str) -> Tuple[bool, int, str]:
+    """Verify https://t.me/s/<channel> is accessible as a public channel and count visible posts."""
+    url = f"https://t.me/s/{channel}"
+    try:
+        async with httpx.AsyncClient(
+            timeout=12.0,
+            follow_redirects=True,
+            headers={"User-Agent": "Mozilla/5.0 (compatible; job-outreach/1.0)"},
+        ) as client:
+            resp = await client.get(url)
+            if resp.status_code != 200:
+                return False, 0, f"HTTP {resp.status_code} from {url}"
+            soup = BeautifulSoup(resp.text, "html.parser")
+            has_channel_info = bool(soup.select_one(".tgme_channel_info, .tgme_page_title"))
+            posts = soup.select(".tgme_widget_message_wrap")
+            if not has_channel_info and not posts:
+                return False, 0, "Not a public Telegram channel (no channel preview found)."
+            return True, len(posts), "ok"
+    except Exception as e:
+        return False, 0, str(e)
+
+
 class TelegramChannelsConnector(BaseDiscoveryConnector):
     """Scrape public Telegram hiring channels via https://t.me/s/<channel> (no login/API needed)."""
 
     source_name = DiscoverySource.TELEGRAM_CHANNELS
 
-    def __init__(self, channels: Optional[List[str]] = None):
+    def __init__(self, channels: Optional[List[str]] = None, use_persisted: bool = True):
         raw = channels or DEFAULT_TELEGRAM_CHANNELS
-        self.channels = [c.strip().lstrip("@").replace("https://t.me/", "").replace("t.me/", "").strip("/") for c in raw if c.strip()]
+        cleaned = [normalize_channel_handle(c) for c in raw]
+        self.channels = [c for c in cleaned if c]
+        self._fallback_channels = list(self.channels)
+        self.use_persisted = use_persisted
 
     async def _fetch_channel(self, client: httpx.AsyncClient, channel: str, limit: int) -> List[RawOpportunity]:
         url = f"https://t.me/s/{channel}"
@@ -229,9 +292,14 @@ class TelegramChannelsConnector(BaseDiscoveryConnector):
             return []
 
     async def fetch_opportunities(self, limit: int = 20) -> List[RawOpportunity]:
-        if not self.channels:
+        active_channels = (
+            get_active_telegram_channels(self._fallback_channels)
+            if self.use_persisted
+            else self.channels
+        )
+        if not active_channels:
             return []
-        per_channel = max(2, limit // max(1, len(self.channels)))
+        per_channel = max(2, limit // max(1, len(active_channels)))
         opportunities: List[RawOpportunity] = []
         async with httpx.AsyncClient(
             timeout=15.0,
@@ -239,10 +307,10 @@ class TelegramChannelsConnector(BaseDiscoveryConnector):
             headers={"User-Agent": "Mozilla/5.0 (compatible; job-outreach/1.0)"},
         ) as client:
             results = await asyncio.gather(
-                *(self._fetch_channel(client, ch, per_channel) for ch in self.channels),
+                *(self._fetch_channel(client, ch, per_channel) for ch in active_channels),
                 return_exceptions=True,
             )
-            for ch, res in zip(self.channels, results):
+            for ch, res in zip(active_channels, results):
                 if isinstance(res, list):
                     opportunities.extend(res)
                 elif isinstance(res, Exception):

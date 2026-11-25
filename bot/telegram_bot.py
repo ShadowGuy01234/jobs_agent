@@ -253,6 +253,8 @@ class TelegramBotController:
             "• <code>/status</code> — View discovery & outreach metrics\n"
             "• <code>/profile</code> — View your profile & targeting criteria\n"
             "• <code>/add [post]</code> — Paste/forward any WhatsApp or LinkedIn hiring post (or send a flyer photo)\n"
+            "• <code>/add_channel [handle]</code> — Add a public Telegram hiring channel (e.g. <code>/add_channel @gocareers</code>)\n"
+            "• <code>/channels</code> / <code>/remove_channel</code> — List or remove tracked Telegram channels\n"
             "• <code>/discover [source]</code> — Trigger on-demand discovery (e.g. <code>/discover hunter_discover</code>)\n"
             "• <code>/sources</code> — List all 16 discovery connectors\n"
             "• <code>/set min_score [number]</code> — Update minimum fit score (e.g. <code>/set min_score 80</code>)\n"
@@ -815,6 +817,142 @@ class TelegramBotController:
             parse_mode=ParseMode.HTML,
         )
 
+    async def cmd_channels(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """List currently tracked public Telegram discovery channels."""
+        if not self.is_authorized(update):
+            return
+
+        from discovery.company_launch.telegram_channels import get_active_telegram_channels
+
+        connector = self.discovery_manager.connectors.get("telegram_channels")
+        fallback = getattr(connector, "_fallback_channels", None)
+        channels = get_active_telegram_channels(fallback)
+        if not channels:
+            await update.message.reply_text(
+                "📡 No Telegram channels configured yet.\nAdd one with <code>/add_channel @handle</code>",
+                parse_mode=ParseMode.HTML,
+            )
+            return
+
+        lines = "\n".join(f"• <code>@{html.escape(c)}</code> (https://t.me/s/{html.escape(c)})" for c in channels)
+        await update.message.reply_text(
+            f"📡 <b>Tracked Telegram Discovery Channels ({len(channels)}):</b>\n\n{lines}\n\n"
+            "<b>Manage:</b>\n"
+            "• <code>/add_channel https://t.me/handle</code>\n"
+            "• <code>/remove_channel handle</code>\n"
+            "• <code>/discover telegram_channels</code>",
+            parse_mode=ParseMode.HTML,
+            disable_web_page_preview=True,
+        )
+
+    async def cmd_add_channel(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Validate and add a public Telegram channel to discovery (persisted in SQLite)."""
+        if not self.is_authorized(update):
+            return
+
+        args = context.args or []
+        if not args:
+            await update.message.reply_text(
+                "Usage: <code>/add_channel @handle</code> or <code>/add_channel https://t.me/handle</code>",
+                parse_mode=ParseMode.HTML,
+            )
+            return
+
+        import json
+        from discovery.company_launch.telegram_channels import (
+            get_active_telegram_channels,
+            normalize_channel_handle,
+            validate_public_channel,
+        )
+
+        handle = normalize_channel_handle(args[0])
+        if not handle:
+            await update.message.reply_text(
+                "⚠️ Invalid or private channel link. Private invite links (<code>t.me/+...</code>) cannot be scraped; "
+                "for private channels, forward or paste posts directly to this chat.",
+                parse_mode=ParseMode.HTML,
+            )
+            return
+
+        connector = self.discovery_manager.connectors.get("telegram_channels")
+        fallback = getattr(connector, "_fallback_channels", None)
+        channels = get_active_telegram_channels(fallback)
+        if any(c.lower() == handle.lower() for c in channels):
+            await update.message.reply_text(
+                f"ℹ️ <code>@{html.escape(handle)}</code> is already in your Telegram discovery list.",
+                parse_mode=ParseMode.HTML,
+            )
+            return
+
+        ok, post_count, reason = await validate_public_channel(handle)
+        if not ok:
+            await update.message.reply_text(
+                f"⚠️ Could not verify public channel <code>@{html.escape(handle)}</code>: {html.escape(reason)}",
+                parse_mode=ParseMode.HTML,
+            )
+            return
+
+        channels.append(handle)
+        set_app_setting("telegram_channels", json.dumps(channels))
+        await update.message.reply_text(
+            f"✅ Added <code>@{html.escape(handle)}</code> ({post_count} recent posts visible).\n"
+            f"Run <code>/discover telegram_channels</code> to scan now!",
+            parse_mode=ParseMode.HTML,
+        )
+
+    async def cmd_remove_channel(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Remove a Telegram channel from discovery."""
+        if not self.is_authorized(update):
+            return
+
+        args = context.args or []
+        if not args:
+            await update.message.reply_text("Usage: <code>/remove_channel handle</code>", parse_mode=ParseMode.HTML)
+            return
+
+        import json
+        from discovery.company_launch.telegram_channels import (
+            get_active_telegram_channels,
+            normalize_channel_handle,
+        )
+
+        handle = normalize_channel_handle(args[0]) or args[0].strip().lstrip("@")
+        connector = self.discovery_manager.connectors.get("telegram_channels")
+        fallback = getattr(connector, "_fallback_channels", None)
+        channels = get_active_telegram_channels(fallback)
+        remaining = [c for c in channels if c.lower() != handle.lower()]
+        if len(remaining) == len(channels):
+            await update.message.reply_text(
+                f"ℹ️ <code>@{html.escape(handle)}</code> was not in your channel list.",
+                parse_mode=ParseMode.HTML,
+            )
+            return
+
+        set_app_setting("telegram_channels", json.dumps(remaining))
+        await update.message.reply_text(
+            f"🗑️ Removed <code>@{html.escape(handle)}</code>. Active channels: <b>{len(remaining)}</b>.",
+            parse_mode=ParseMode.HTML,
+        )
+
+    async def cmd_channel(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Unified /channel <list|add|remove> [handle] helper."""
+        if not self.is_authorized(update):
+            return
+        args = context.args or []
+        if not args or args[0].lower() == "list":
+            await self.cmd_channels(update, context)
+            return
+        sub = args[0].lower()
+        context.args = args[1:]
+        if sub == "add":
+            await self.cmd_add_channel(update, context)
+        elif sub in ("remove", "rm", "del", "delete"):
+            await self.cmd_remove_channel(update, context)
+        else:
+            # Allow shorthand: /channel @handle
+            context.args = args
+            await self.cmd_add_channel(update, context)
+
     async def cmd_add(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle /add <pasted hiring post> command."""
         if not self.is_authorized(update):
@@ -985,6 +1123,10 @@ class TelegramBotController:
         app.add_handler(CommandHandler("status", self.cmd_status))
         app.add_handler(CommandHandler("profile", self.cmd_profile))
         app.add_handler(CommandHandler("add", self.cmd_add))
+        app.add_handler(CommandHandler("channels", self.cmd_channels))
+        app.add_handler(CommandHandler("add_channel", self.cmd_add_channel))
+        app.add_handler(CommandHandler("remove_channel", self.cmd_remove_channel))
+        app.add_handler(CommandHandler("channel", self.cmd_channel))
         app.add_handler(CommandHandler("discover", self.cmd_discover))
         app.add_handler(CommandHandler("logs", self.cmd_logs))
         app.add_handler(CommandHandler("set", self.cmd_set))

@@ -222,7 +222,41 @@ async def test_follow_up_bump_drafting():
     assert "Re:" in draft.subject
     assert "Alex" in draft.body
     assert profile.candidate.full_name in draft.body
+    assert profile.candidate.resume_url in draft.body
     assert draft.word_count < 60
+
+
+@pytest.mark.asyncio
+async def test_initial_draft_guarantees_resume_url(monkeypatch):
+    """Initial outreach draft always includes candidate resume_url even if LLM omits it."""
+    from unittest.mock import AsyncMock
+    from pipeline.llm import LLMClient
+    from pipeline.schemas import OutreachDraftResult
+
+    profile = load_user_profile()
+    profile.candidate.resume_url = "https://drive.google.com/file/d/1fK91IthWfaEeqeBXgwQIYL8r4UE7DOG1/view?usp=sharing"
+
+    monkeypatch.setattr(
+        LLMClient,
+        "generate_structured",
+        AsyncMock(
+            return_value=OutreachDraftResult(
+                subject="Quick note on Acme",
+                body="Hi Alex,\n\nGreat infra work.\n\nBest,\nCandidate",
+                personalization_hook="Infra",
+                word_count=8,
+            )
+        ),
+    )
+    draft = await draft_personalized_outreach(
+        company_data=EnrichedCompanyData(name="Acme", stage="seed", one_liner="Infra"),
+        fit_eval=FitEvaluationResult(
+            fit_score=88, decision="PROCEED", summary_reasoning="Match", personalized_hook="Infra"
+        ),
+        contact_info=ContactInfoResult(name="Alex", title="CEO", email="alex@acme.dev"),
+        profile=profile,
+    )
+    assert "https://drive.google.com/file/d/1fK91IthWfaEeqeBXgwQIYL8r4UE7DOG1/view?usp=sharing" in draft.body
 
 
 def test_title_relevance_filter():

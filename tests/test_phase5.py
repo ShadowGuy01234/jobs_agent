@@ -234,3 +234,55 @@ async def test_bot_text_message_ingests_forwarded_post(monkeypatch):
     await bot.handle_text_message(update, MagicMock())
     send_card_spy.assert_awaited_once()
     assert send_card_spy.await_args.args[1]["opportunity_id"] == 77
+
+
+@pytest.mark.asyncio
+async def test_bot_add_and_remove_telegram_channel(tmp_path, monkeypatch):
+    """Bot commands /add_channel, /channels, /remove_channel persist and validate handles."""
+    from unittest.mock import AsyncMock, MagicMock
+    from config import settings
+    from db.database import init_db
+    import discovery.company_launch.telegram_channels as tc
+
+    db_path = tmp_path / "channels_test.db"
+    init_db(db_path)
+    monkeypatch.setattr(settings, "DATABASE_PATH", db_path)
+
+    assert tc.normalize_channel_handle("https://t.me/s/gocareers/") == "gocareers"
+    assert tc.normalize_channel_handle("@internfreak") == "internfreak"
+    assert tc.normalize_channel_handle("https://t.me/+AbCdEfG123") is None
+
+    monkeypatch.setattr(tc, "validate_public_channel", AsyncMock(return_value=(True, 18, "ok")))
+
+    bot = TelegramBotController(token="123456:dummy", authorized_chat_id="998877")
+
+    def make_update(args):
+        u = MagicMock()
+        u.effective_chat.id = 998877
+        u.effective_user.username = "testuser"
+        u.message.reply_text = AsyncMock()
+        ctx = MagicMock()
+        ctx.args = list(args)
+        return u, ctx
+
+    # 1. Reject private invite link
+    u, ctx = make_update(["https://t.me/+privateInvite"])
+    await bot.cmd_add_channel(u, ctx)
+    assert "private" in u.message.reply_text.await_args.args[0].lower()
+
+    # 2. Add valid channel
+    u, ctx = make_update(["https://t.me/my_new_jobs"])
+    await bot.cmd_add_channel(u, ctx)
+    assert "Added" in u.message.reply_text.await_args.args[0]
+    assert "my_new_jobs" in tc.get_active_telegram_channels()
+
+    # 3. List channels
+    u, ctx = make_update([])
+    await bot.cmd_channels(u, ctx)
+    assert "my_new_jobs" in u.message.reply_text.await_args.args[0]
+
+    # 4. Remove channel
+    u, ctx = make_update(["@my_new_jobs"])
+    await bot.cmd_remove_channel(u, ctx)
+    assert "Removed" in u.message.reply_text.await_args.args[0]
+    assert "my_new_jobs" not in tc.get_active_telegram_channels()

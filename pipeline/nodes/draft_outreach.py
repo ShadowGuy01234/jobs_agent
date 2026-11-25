@@ -70,13 +70,16 @@ async def draft_personalized_outreach(
     # 1. Handle Follow-Up Bump
     if is_follow_up:
         subject = f"Re: {original_subject or f'Quick note on {company_data.name}'}"
+        sig_parts = [f"{cand.full_name} | {cand.github or cand.portfolio_url}"]
+        if cand.resume_url:
+            sig_parts.append(f"Resume: {cand.resume_url}")
         body = (
             f"Hi {first_name},\n\n"
             f"Just bumping this in case it got buried in your inbox. "
             f"Still following your work on {company_data.name} and would love to grab a quick "
             f"{style.meeting_minutes} min chat if you're open to it — {ask} works on my end.\n\n"
             f"Best,\n"
-            f"{cand.full_name} | {cand.github or cand.portfolio_url}"
+            + "\n".join(sig_parts)
         )
         return OutreachDraftResult(
             subject=subject,
@@ -111,6 +114,7 @@ Name: {cand.full_name}
 Headline: {cand.headline}
 Core Skills: {', '.join(cand.core_skills)}
 Portfolio / GitHub: {cand.github or cand.portfolio_url or ''}
+Resume Link: {cand.resume_url or ''}
 
 Proof-of-Work Achievements (SELECT THE 1-2 MOST RELEVANT to this specific company — do not use all of them, and do not default to the first two):
 {achievements}
@@ -156,6 +160,7 @@ Follow this EXACT sequence and psychology:
    Best,
    {cand.full_name}
    {cand.github or cand.portfolio_url or ''}
+   {f'Resume: {cand.resume_url}' if cand.resume_url else ''}
 
 =========================================
 🚫 CRITICAL ANTI-PATTERNS (DO NOT DO)
@@ -170,9 +175,13 @@ Follow this EXACT sequence and psychology:
 {profile_anti_patterns}
 """
 
-    return await client.generate_structured(
+    result = await client.generate_structured(
         prompt=prompt,
         response_schema=OutreachDraftResult,
         use_smart=True,
         system_prompt=COPYWRITER_SYSTEM_PROMPT,
     )
+    if cand.resume_url and cand.resume_url not in result.body:
+        result.body = f"{result.body.rstrip()}\nResume: {cand.resume_url}"
+        result.word_count = len(result.body.split())
+    return result
