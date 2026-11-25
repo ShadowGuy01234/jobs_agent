@@ -348,7 +348,7 @@ class TelegramBotController:
             "<b>Track B (Early Startups, Launches & Stealth):</b>\n"
             "• <code>yc</code> — Y Combinator (4 most recent batches)\n"
             "• <code>hn_hiring</code> — Hacker News monthly Who Is Hiring thread\n"
-            "• <code>telegram_channels</code> — Public Telegram hiring channels (t.me/s/...)\n"
+            "• <code>telegram_channels</code> — Public Telegram hiring channels (use <code>/channels</code> to list)\n"
             "• <code>github_trending</code> — Fast-growing AI &amp; DevTools GitHub orgs\n"
             "• <code>producthunt</code> — Product Hunt trending maker launches\n"
             "• <code>hackernews</code> — Hacker News Launch HN & Show HN\n"
@@ -1124,6 +1124,7 @@ class TelegramBotController:
         app.add_handler(CommandHandler("profile", self.cmd_profile))
         app.add_handler(CommandHandler("add", self.cmd_add))
         app.add_handler(CommandHandler("channels", self.cmd_channels))
+        app.add_handler(CommandHandler("list_channels", self.cmd_channels))
         app.add_handler(CommandHandler("add_channel", self.cmd_add_channel))
         app.add_handler(CommandHandler("remove_channel", self.cmd_remove_channel))
         app.add_handler(CommandHandler("channel", self.cmd_channel))
