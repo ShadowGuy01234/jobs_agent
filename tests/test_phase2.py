@@ -254,6 +254,45 @@ async def test_github_trending_connector_mock(monkeypatch):
     assert opps[0].company.name == "acme-ai"
 
 
+def test_parse_telegram_channel_html():
+    """parse_telegram_channel_html extracts company, domain, email, and skips pinned noise."""
+    from discovery.company_launch.telegram_channels import parse_telegram_channel_html
+
+    sample_html = """
+    <div class="tgme_widget_message_wrap">
+      <div class="tgme_widget_message" data-post="offcampus/1">
+        <div class="tgme_widget_message_text">Channel created</div>
+      </div>
+    </div>
+    <div class="tgme_widget_message_wrap">
+      <div class="tgme_widget_message" data-post="offcampus/2">
+        <div class="tgme_widget_message_text">
+          Saraswati AI is Hiring Engineering Interns<br>
+          Mail here : tech@mysaraswati.in<br>
+          <a href="https://www.linkedin.com/posts/alokthegeek_hiring-interns">Apply</a>
+        </div>
+      </div>
+    </div>
+    <div class="tgme_widget_message_wrap">
+      <div class="tgme_widget_message" data-post="offcampus/3">
+        <div class="tgme_widget_message_text">
+          Company name: Isomorph AI<br>
+          Role: Software Engineering Intern<br>
+          <a href="https://isomorph.ai/careers">https://isomorph.ai/careers</a>
+        </div>
+      </div>
+    </div>
+    """
+    opps = parse_telegram_channel_html("offcampus", sample_html, limit=10)
+    assert len(opps) == 2
+    # Reverse chronological: newest first
+    assert opps[0].company.name == "Isomorph AI"
+    assert opps[0].company.domain == "isomorph.ai"
+    assert opps[1].company.name == "Saraswati AI"
+    assert opps[1].company.domain == "mysaraswati.in"
+    assert opps[1].metadata["direct_email"] == "tech@mysaraswati.in"
+
+
 @pytest.mark.asyncio
 async def test_remote_boards_isolates_failing_feed(monkeypatch):
     """One failing/timing-out feed must not block results from healthy remote feeds."""

@@ -10,6 +10,7 @@ from discovery.company_launch.indian_startups import IndianStartupsConnector
 from discovery.company_launch.sec_edgar import SecEdgarConnector
 from discovery.company_launch.vc_stealth import VCStealthConnector
 from discovery.company_launch.tavily_stealth import TavilyStealthConnector
+from discovery.company_launch.telegram_channels import TelegramChannelsConnector
 
 __all__ = [
     "YCDirectoryConnector",
@@ -22,4 +23,5 @@ __all__ = [
     "SecEdgarConnector",
     "VCStealthConnector",
     "TavilyStealthConnector",
+    "TelegramChannelsConnector",
 ]

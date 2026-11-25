@@ -24,6 +24,7 @@ from discovery.company_launch import (
     ProductHuntConnector,
     SecEdgarConnector,
     TavilyStealthConnector,
+    TelegramChannelsConnector,
     VCStealthConnector,
     YCDirectoryConnector,
 )
@@ -74,6 +75,7 @@ class DiscoveryManager:
             "sec_edgar": SecEdgarConnector(),
             "vc_stealth": VCStealthConnector(rss_feeds=targets.vc_rss or None),
             "tavily_stealth": TavilyStealthConnector(),
+            "telegram_channels": TelegramChannelsConnector(channels=targets.telegram_channels or None),
             "watchlist": WatchlistConnector(target_startups=targets.watchlist or None),
         }
 

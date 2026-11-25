@@ -6,6 +6,7 @@ from contextlib import asynccontextmanager
 from typing import Optional
 from fastapi import BackgroundTasks, FastAPI
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel
 import uvicorn
 
 from backup import create_database_backup
@@ -151,6 +152,34 @@ async def trigger_backup():
     """Manually trigger database snapshot backup."""
     backup_file = create_database_backup()
     return {"status": "backup_created", "file": str(backup_file)}
+
+
+class IngestTextRequest(BaseModel):
+    text: str
+    source_url: Optional[str] = None
+
+
+@app.post("/ingest/text")
+async def ingest_text(payload: IngestTextRequest):
+    """Ingest a forwarded/shared hiring post (WhatsApp, LinkedIn, shortcut) and run the pipeline."""
+    from pipeline.ingest import ingest_and_process_shared_post
+
+    res = await ingest_and_process_shared_post(
+        text=payload.text,
+        source_url=payload.source_url,
+    )
+    if telegram_app and settings.TELEGRAM_CHAT_ID and res.get("interrupt_payload"):
+        from bot.card_renderer import render_opportunity_card
+
+        card_text, keyboard = render_opportunity_card(res["interrupt_payload"])
+        await telegram_app.bot.send_message(
+            chat_id=settings.TELEGRAM_CHAT_ID,
+            text=card_text,
+            reply_markup=keyboard,
+            parse_mode="HTML",
+            disable_web_page_preview=True,
+        )
+    return res
 
 
 def start():

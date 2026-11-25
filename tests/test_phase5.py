@@ -139,3 +139,98 @@ async def test_approve_callback_forwards_email_and_distinguishes_dry_run(tmp_pat
         assert "jane@acme.ai" in last_text_live
     finally:
         settings.DRY_RUN = orig_dry
+
+
+@pytest.mark.asyncio
+async def test_shared_post_ingestion_preseeds_verified_email(tmp_path, monkeypatch):
+    """WhatsApp/LinkedIn shared posts extract direct email and pre-seed a verified contact."""
+    from unittest.mock import AsyncMock
+    from config import settings
+    from db.database import get_verified_company_contact, init_db
+    from pipeline.ingest import SharedPostExtraction, ingest_and_process_shared_post, looks_like_job_post
+    from pipeline.llm import LLMClient
+
+    db_path = tmp_path / "ingest_test.db"
+    init_db(db_path)
+    monkeypatch.setattr(settings, "DATABASE_PATH", db_path)
+
+    sample_post = (
+        "#hiring #interns | Alok Singh\n"
+        "Saraswati AI is Hiring Engineering Interns\n"
+        "Mail here : tech@mysaraswati.in\n"
+        "https://www.linkedin.com/posts/alokthegeek_hiring-interns"
+    )
+    assert looks_like_job_post(sample_post) is True
+    assert looks_like_job_post("hi") is False
+
+    monkeypatch.setattr(
+        LLMClient,
+        "generate_structured",
+        AsyncMock(
+            return_value=SharedPostExtraction(
+                company_name="Saraswati AI",
+                domain="mysaraswati.in",
+                role_title="Engineering Intern",
+                opportunity_type="job_posting",
+                stage="seed",
+                one_liner="AI education startup",
+                contact_name="Alok Singh",
+                contact_title="Founder",
+                contact_email="tech@mysaraswati.in",
+            )
+        ),
+    )
+
+    mock_orch = AsyncMock()
+    mock_orch.process_opportunity = AsyncMock(
+        return_value={
+            "opportunity_id": 1,
+            "company_name": "Saraswati AI",
+            "fit_score": 85,
+            "contact_email": "tech@mysaraswati.in",
+        }
+    )
+
+    res = await ingest_and_process_shared_post(
+        text=sample_post,
+        orchestrator=mock_orch,
+        db_path=db_path,
+    )
+    assert res["duplicate"] is False
+    assert res["interrupt_payload"]["contact_email"] == "tech@mysaraswati.in"
+    cached = get_verified_company_contact(1, db_path=db_path)
+    assert cached is not None
+    assert cached["email"] == "tech@mysaraswati.in"
+
+
+@pytest.mark.asyncio
+async def test_bot_text_message_ingests_forwarded_post(monkeypatch):
+    """Text messages outside draft-edit sessions ingest forwarded job posts and send a card."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    bot = TelegramBotController(token="123456:dummy", authorized_chat_id="998877")
+    fake_payload = {
+        "opportunity_id": 77,
+        "company_name": "Saraswati AI",
+        "fit_score": 86,
+        "contact_email": "tech@mysaraswati.in",
+        "email_confidence": "verified",
+        "draft_subject": "Quick note",
+        "draft_body": "Hi Alok",
+    }
+    monkeypatch.setattr(
+        "pipeline.ingest.ingest_and_process_shared_post",
+        AsyncMock(return_value={"duplicate": False, "interrupt_payload": fake_payload}),
+    )
+    send_card_spy = AsyncMock()
+    monkeypatch.setattr(bot, "_send_opportunity_card", send_card_spy)
+
+    update = MagicMock()
+    update.effective_chat.id = 998877
+    update.effective_user.username = "testuser"
+    update.message.text = "Saraswati AI is Hiring Engineering Interns\nMail here: tech@mysaraswati.in"
+    update.message.reply_text = AsyncMock()
+
+    await bot.handle_text_message(update, MagicMock())
+    send_card_spy.assert_awaited_once()
+    assert send_card_spy.await_args.args[1]["opportunity_id"] == 77

@@ -156,6 +156,14 @@ discovery:
     - "https://venturebeat.com/category/ai/feed/"
     - "https://strictlyvc.com/feed/"
 
+  # Public Telegram channels scraped via https://t.me/s/<handle>
+  telegram_channels:
+    - "jobs_and_internships_updates"
+    - "gocareers"
+    - "internfreak"
+    - "offcampusjobs4u"
+    - "remotejobs_ai"
+
   watchlist:
     - name: "Cursor"
       domain: "cursor.com"

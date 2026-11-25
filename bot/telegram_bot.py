@@ -252,8 +252,9 @@ class TelegramBotController:
             "• <code>/clear</code> — Clear pending reviews and backlog queue (e.g. <code>/clear reviews</code>)\n"
             "• <code>/status</code> — View discovery & outreach metrics\n"
             "• <code>/profile</code> — View your profile & targeting criteria\n"
+            "• <code>/add [post]</code> — Paste/forward any WhatsApp or LinkedIn hiring post (or send a flyer photo)\n"
             "• <code>/discover [source]</code> — Trigger on-demand discovery (e.g. <code>/discover hunter_discover</code>)\n"
-            "• <code>/sources</code> — List all 15 discovery connectors\n"
+            "• <code>/sources</code> — List all 16 discovery connectors\n"
             "• <code>/set min_score [number]</code> — Update minimum fit score (e.g. <code>/set min_score 80</code>)\n"
             "• <code>/dry_run [on|off]</code> — Toggle dry-run email sending mode\n"
             "• <code>/logs</code> — View recent diagnostic logs for debugging\n"
@@ -345,6 +346,7 @@ class TelegramBotController:
             "<b>Track B (Early Startups, Launches & Stealth):</b>\n"
             "• <code>yc</code> — Y Combinator (4 most recent batches)\n"
             "• <code>hn_hiring</code> — Hacker News monthly Who Is Hiring thread\n"
+            "• <code>telegram_channels</code> — Public Telegram hiring channels (t.me/s/...)\n"
             "• <code>github_trending</code> — Fast-growing AI &amp; DevTools GitHub orgs\n"
             "• <code>producthunt</code> — Product Hunt trending maker launches\n"
             "• <code>hackernews</code> — Hacker News Launch HN & Show HN\n"
@@ -766,17 +768,112 @@ class TelegramBotController:
         await update.message.reply_text(msg, parse_mode=ParseMode.HTML)
 
     # ==========================================================================
-    # 💬 TEXT MESSAGE LISTENER (FOR DRAFT EDITS & EMAIL INPUT)
+    # 📥 SHARED POST / FLYER INGESTION (WHATSAPP, LINKEDIN, PHOTOS)
+    # ==========================================================================
+
+    async def _ingest_shared_post(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE, raw_text: str
+    ) -> None:
+        """Parse a forwarded/pasted hiring post, evaluate fit, and push an Approve card."""
+        from pipeline.ingest import ingest_and_process_shared_post
+
+        await update.message.reply_text(
+            "🔍 <b>Parsing shared post &amp; evaluating fit...</b>",
+            parse_mode=ParseMode.HTML,
+        )
+        try:
+            res = await ingest_and_process_shared_post(
+                text=raw_text,
+                orchestrator=self.orchestrator,
+            )
+        except Exception as e:
+            logger.error(f"Shared post ingestion failed: {e}", exc_info=True)
+            await update.message.reply_text(f"⚠️ Could not process post: {html.escape(str(e))}")
+            return
+
+        if res.get("duplicate"):
+            parsed = res.get("parsed") or {}
+            await update.message.reply_text(
+                f"ℹ️ Already ingested <b>{html.escape(str(parsed.get('company_name', 'this post')))}</b> previously.",
+                parse_mode=ParseMode.HTML,
+            )
+            return
+
+        payload = res.get("interrupt_payload")
+        if payload:
+            await self._send_opportunity_card(update.effective_chat.id, payload, context)
+            return
+
+        ev = res.get("evaluation") or {}
+        score = ev.get("fit_score", 0)
+        reason = html.escape(str(ev.get("summary_reasoning") or "Did not meet fit threshold."))
+        comp = html.escape(str(ev.get("company_name") or res.get("parsed", {}).get("company_name", "Opportunity")))
+        await update.message.reply_text(
+            f"⚠️ <b>{comp}</b> scored <b>{score}/100</b> (below threshold {settings.MIN_FIT_SCORE}/100) and was filtered out.\n"
+            f"<i>Reason: {reason}</i>\n\n"
+            f"<i>Tip: lower threshold temporarily with</i> <code>/set min_score {max(40, score)}</code> <i>if you want to outreach anyway.</i>",
+            parse_mode=ParseMode.HTML,
+        )
+
+    async def cmd_add(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handle /add <pasted hiring post> command."""
+        if not self.is_authorized(update):
+            return
+
+        raw_text = (update.message.text or "").partition(" ")[2].strip()
+        if not raw_text and update.message.reply_to_message:
+            raw_text = (update.message.reply_to_message.text or update.message.reply_to_message.caption or "").strip()
+        if not raw_text:
+            await update.message.reply_text(
+                "Paste or forward any WhatsApp/LinkedIn hiring post directly here, or run:\n"
+                "<code>/add Saraswati AI is hiring Engineering Interns - mail tech@mysaraswati.in</code>",
+                parse_mode=ParseMode.HTML,
+            )
+            return
+        await self._ingest_shared_post(update, context, raw_text)
+
+    async def handle_photo_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handle forwarded hiring flyers/screenshots (with or without captions)."""
+        if not update.message or not update.message.photo or not self.is_authorized(update):
+            return
+
+        from pipeline.ingest import extract_text_from_image_bytes
+
+        caption = (update.message.caption or "").strip()
+        raw_text = caption
+        if len(caption) < 40:
+            try:
+                tg_file = await update.message.photo[-1].get_file()
+                img_bytes = bytes(await tg_file.download_as_bytearray())
+                raw_text = await extract_text_from_image_bytes(img_bytes, caption=caption)
+            except Exception as e:
+                logger.warning(f"Photo download/OCR failed: {e}")
+
+        if not raw_text or len(raw_text.strip()) < 15:
+            await update.message.reply_text("⚠️ Could not read text from that image. Please paste the post text or caption.")
+            return
+        await self._ingest_shared_post(update, context, raw_text)
+
+    # ==========================================================================
+    # 💬 TEXT MESSAGE LISTENER (DRAFT EDITS, EMAIL INPUT, & SHARED POSTS)
     # ==========================================================================
 
     async def handle_text_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Handle incoming text replies for draft edits and manual email updates."""
+        """Handle draft edits, manual email input, and directly pasted/forwarded hiring posts."""
         if not update.message or not update.message.text or not self.is_authorized(update):
             return
 
         chat_id = str(update.effective_chat.id)
         session = self.user_sessions.get(chat_id)
         if not session:
+            from pipeline.ingest import looks_like_job_post
+
+            if looks_like_job_post(update.message.text):
+                await self._ingest_shared_post(update, context, update.message.text.strip())
+            else:
+                await update.message.reply_text(
+                    "💡 Paste/forward a hiring post (or flyer screenshot) to draft outreach, or send /help for commands."
+                )
             return
 
         text = update.message.text.strip()
@@ -887,6 +984,7 @@ class TelegramBotController:
         app.add_handler(CommandHandler("sources", self.cmd_sources))
         app.add_handler(CommandHandler("status", self.cmd_status))
         app.add_handler(CommandHandler("profile", self.cmd_profile))
+        app.add_handler(CommandHandler("add", self.cmd_add))
         app.add_handler(CommandHandler("discover", self.cmd_discover))
         app.add_handler(CommandHandler("logs", self.cmd_logs))
         app.add_handler(CommandHandler("set", self.cmd_set))
@@ -894,6 +992,7 @@ class TelegramBotController:
 
         # Add Callback Query & Message Handlers
         app.add_handler(CallbackQueryHandler(self.handle_callback_query))
+        app.add_handler(MessageHandler(filters.PHOTO, self.handle_photo_message))
         app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_text_message))
 
         self.app = app

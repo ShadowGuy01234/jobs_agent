@@ -63,6 +63,7 @@ class DiscoveryTargets(BaseModel):
     hn_queries: List[str] = Field(default_factory=list)
     india_rss: List[str] = Field(default_factory=list)
     vc_rss: List[str] = Field(default_factory=list)
+    telegram_channels: List[str] = Field(default_factory=list)
     watchlist: List[Dict[str, Any]] = Field(default_factory=list)
 
 

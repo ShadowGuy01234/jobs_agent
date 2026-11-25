@@ -78,6 +78,22 @@ def _deobfuscate(text: str) -> str:
     return out
 
 
+def extract_direct_email_from_text(text: Optional[str], domain: Optional[str] = None) -> Optional[str]:
+    """Pull an explicit outreach email from a hiring post (e.g. 'Mail here: tech@company.in')."""
+    if not text:
+        return None
+    matches = [m.lower().strip() for m in re.findall(r"\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}\b", text)]
+    clean_domain = domain.lower().strip() if domain else None
+    for email in matches:
+        if any(ex in email for ex in ("noreply", "donotreply", "privacy", "abuse")):
+            continue
+        if clean_domain and email.endswith(f"@{clean_domain}"):
+            return email
+        if not clean_domain and not email.endswith(("@example.com", "@test.com")):
+            return email
+    return None
+
+
 async def scrape_website_emails(domain: str) -> List[str]:
     """Scrape contact/team/careers pages and security.txt directly from the company website."""
     if not domain:

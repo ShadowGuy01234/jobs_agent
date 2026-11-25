@@ -19,7 +19,7 @@ from db.database import (
 from discovery.models import CompanyInfo, DiscoverySource, OpportunityType, RawOpportunity
 from pipeline.nodes.draft_outreach import draft_personalized_outreach
 from pipeline.nodes.extract_enrich import extract_and_enrich
-from pipeline.nodes.research_contacts import research_contact
+from pipeline.nodes.research_contacts import extract_direct_email_from_text, research_contact
 from pipeline.nodes.score_fit import score_opportunity_fit
 from pipeline.nodes.send_outreach import execute_outreach_send
 from pipeline.schemas import ContactInfoResult, EnrichedCompanyData, FitEvaluationResult
@@ -139,6 +139,27 @@ async def node_research(state: OpportunityPipelineState) -> Dict[str, Any]:
             "contact_email": cached["email"],
             "email_confidence": cached["email_confidence"],
             "linkedin_url": cached["linkedin_url"],
+        }
+
+    direct_post_email = extract_direct_email_from_text(state.raw_content, state.company_domain)
+    if direct_post_email:
+        logger.info(f"Using direct email from posting text for {state.company_name}: {direct_post_email}")
+        contact_id = save_or_update_contact(
+            company_id=state.company_id,
+            name="Hiring Team",
+            title="Hiring Lead",
+            email=direct_post_email,
+            email_confidence="verified",
+            source="posting_text",
+            db_path=db_path,
+        )
+        return {
+            "contact_id": contact_id,
+            "contact_name": "Hiring Team",
+            "contact_title": "Hiring Lead",
+            "contact_email": direct_post_email,
+            "email_confidence": "verified",
+            "linkedin_url": None,
         }
 
     company_data = EnrichedCompanyData(

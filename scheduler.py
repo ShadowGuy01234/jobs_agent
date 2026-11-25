@@ -39,6 +39,7 @@ ROTATING_SOURCES: List[str] = [
     "hunter_discover",
     "yc",
     "hn_hiring",
+    "telegram_channels",
     "ashby",
     "github_trending",
     "remote_boards",
